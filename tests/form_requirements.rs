@@ -1,5 +1,5 @@
 use quantitas::UnitRegistry;
-use resolvent::{
+use scientia::{
     DerivativeEvaluation, ElementFamilyRequirement, EvaluationSite, FormAssumption,
     GeometryPreprocessingRequirement, InputSourceRequirement, OrientationRequirement,
     PullbackRequirement, QuadraturePrecision, RequirementInferenceError, SemanticMeasure,
@@ -196,7 +196,7 @@ fn fc3_models_product_h1_l2_dg_hcurl_hdiv_and_trace_requirements() {
     let form = compile_variational_form(&compilation.semantic, "Spaces", "product").unwrap();
     let requirements = infer_form_requirements(&compilation.semantic, &form).unwrap();
     let wire = serde_json::to_string(&requirements).unwrap();
-    let round_trip: resolvent::FormRequirements = serde_json::from_str(&wire).unwrap();
+    let round_trip: scientia::FormRequirements = serde_json::from_str(&wire).unwrap();
 
     assert_eq!(
         requirements.space_system.composition,

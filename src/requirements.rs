@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use thiserror::Error;
 
-pub const FORM_REQUIREMENTS_SCHEMA: &str = "resolvent-form-requirements/1";
+pub const FORM_REQUIREMENTS_SCHEMA: &str = "scientia-form-requirements/1";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

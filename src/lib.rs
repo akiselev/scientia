@@ -1,10 +1,12 @@
-//! `resolvent` parses `.res` source and derives scientific compiler semantics.
+//! `scientia` parses `.res` source and derives scientific compiler semantics.
 //!
 //! Source syntax is represented by [`scientific::ScientificModule`]; resolved scientific meaning
 //! lives exclusively in the typed [`semantic::SemanticModule`] arena. Quantity values use
 //! Quantitas directly, while numerical realization and solve strategy belong downstream.
 
 #![forbid(unsafe_code)]
+
+mod algebra;
 
 pub mod evidence;
 pub mod form_interpreter;

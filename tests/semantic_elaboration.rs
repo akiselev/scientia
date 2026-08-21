@@ -1,5 +1,5 @@
 use quantitas::{Dimension, UnitRegistry};
-use resolvent::{
+use scientia::{
     Frame, ScientificError, SemanticExprKind, SemanticRole, SemanticShape, compile_semantics,
     parse_scientific_module, parse_scientific_module_diagnostics, resolve_modules,
     semantic_arena_digest,
@@ -30,7 +30,7 @@ model Typed {
 }
 "#;
 
-fn only_diagnostic(source: &str) -> resolvent::SourceDiagnostic {
+fn only_diagnostic(source: &str) -> scientia::SourceDiagnostic {
     let diagnostics = compile_semantics(source, &UnitRegistry::si_bootstrap()).unwrap_err();
     assert_eq!(
         diagnostics.len(),
@@ -51,7 +51,7 @@ fn elaboration_resolves_roles_domains_types_and_expression_identities() {
         .unwrap();
     assert!(matches!(
         temperature.ty.role,
-        SemanticRole::PhysicalField(resolvent::scientific::FieldRole::State)
+        SemanticRole::PhysicalField(scientia::scientific::FieldRole::State)
     ));
     assert_eq!(temperature.ty.dimension, Some(Dimension::TEMPERATURE));
     assert!(matches!(temperature.ty.shape, SemanticShape::Numeric(_)));

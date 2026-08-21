@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use thiserror::Error;
 
-pub const STRUCTURED_KERNEL_BUNDLE_SCHEMA: &str = "resolvent-structured-kernel-bundle/1";
+pub const STRUCTURED_KERNEL_BUNDLE_SCHEMA: &str = "scientia-structured-kernel-bundle/1";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

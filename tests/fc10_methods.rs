@@ -1,6 +1,6 @@
 use malleus::{BufferBinding, ExecutableModule, Interpreter, OperandId, validate_module};
 use quantitas::UnitRegistry;
-use resolvent::{
+use scientia::{
     AffineMethodKernelSpec, MethodCompileError, MethodFamily, MethodProgramKind,
     MethodSelectionReceipt, compile_boundary_integral_method, compile_conservation_law_method,
     compile_finite_difference_method, compile_network_dae_method, compile_particle_method,
@@ -52,7 +52,7 @@ model Boundary {
 }
 "#;
 
-fn semantics() -> resolvent::SemanticModule {
+fn semantics() -> scientia::SemanticModule {
     compile_semantics(METHODS, &UnitRegistry::si_bootstrap())
         .unwrap()
         .semantic
@@ -139,7 +139,7 @@ fn five_sibling_compilers_produce_distinct_nonvariational_artifacts() {
     assert!(programs.iter().all(|program| {
         program.receipt.selected_without_variational_form
             && program.receipt.source_semantic_digest == program.source_semantic_digest
-            && program.schema == "resolvent-method-program/2"
+            && program.schema == "scientia-method-program/2"
     }));
     assert!(programs.iter().all(|program| {
         let model = module
@@ -237,7 +237,7 @@ fn complete_method_program_round_trips_with_its_malleus_module() {
     )
     .unwrap();
     let encoded = serde_json::to_vec(&program).unwrap();
-    let decoded: resolvent::MethodProgram = serde_json::from_slice(&encoded).unwrap();
+    let decoded: scientia::MethodProgram = serde_json::from_slice(&encoded).unwrap();
     assert_eq!(decoded, program);
     validate_module(decoded.local_kernel.unwrap().module).unwrap();
 }

@@ -1,16 +1,17 @@
 [package]
-name = "resolvent"
+name = "scientia"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.93"
 license = "MIT OR Apache-2.0"
 description = "Scientific language and semantic compiler for multiphysics models"
-repository = "https://github.com/akiselev/resolvent"
+repository = "https://github.com/akiselev/scientia"
 
 [dependencies]
 blake3 = "1"
 malleus = { path = "../malleus" }
 quantitas = { path = "../quantitas" }
+resolvent = { path = "../resolvent" }
 serde = { version = "1", features = ["derive", "rc"] }
 serde_json = { version = "1", features = ["float_roundtrip"] }
 thiserror = "2"

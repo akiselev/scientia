@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use thiserror::Error;
 
-pub const SCIENTIFIC_SCHEMA: &str = "resolvent-scientific/1";
+pub const SCIENTIFIC_SCHEMA: &str = "scientia-scientific/1";
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ScientificModule {
@@ -989,7 +989,7 @@ impl Parser {
         Some(QuantityLiteral {
             value,
             unit: UnitId::new(unit),
-            kind: kind.unwrap_or_else(|| QuantityKindId::new("resolvent:Unspecified")),
+            kind: kind.unwrap_or_else(|| QuantityKindId::new("scientia:Unspecified")),
         })
     }
 
@@ -1990,13 +1990,13 @@ impl PropertyDefinition {
         match &self.model {
             PropertyModel::Constant(_) => Ok(Some(0.0)),
             PropertyModel::Expression(expr) => {
-                Ok(Some(eval_expr(&differentiate_expr(expr, input), inputs)?))
+                Ok(Some(eval_expr(&differentiate_expr(expr, input)?, inputs)?))
             }
             PropertyModel::Piecewise(branches) => {
                 for b in branches {
                     if b.when.as_ref().is_none_or(|p| predicate(p, inputs)) {
                         return Ok(Some(eval_expr(
-                            &differentiate_expr(&b.value, input),
+                            &differentiate_expr(&b.value, input)?,
                             inputs,
                         )?));
                     }
@@ -2103,84 +2103,8 @@ pub fn eval_expr(expr: &Expr, env: &BTreeMap<String, f64>) -> Result<f64, Scient
     })
 }
 
-pub fn differentiate_expr(expr: &Expr, var: &str) -> Expr {
-    let span = expr.span();
-    let n = |v: f64| Expr::Number {
-        value: v,
-        unit: None,
-        span,
-    };
-    let unary = |op, arg| Expr::Unary {
-        op,
-        arg: Box::new(arg),
-        span,
-    };
-    let binary = |op, lhs, rhs| Expr::Binary {
-        op,
-        lhs: Box::new(lhs),
-        rhs: Box::new(rhs),
-        span,
-    };
-    let call = |function: &str, args| Expr::Call {
-        function: function.into(),
-        args,
-        span,
-    };
-    match expr {
-        Expr::Number { .. } | Expr::String { .. } => n(0.0),
-        Expr::Name { name, .. } => n(if name == var { 1.0 } else { 0.0 }),
-        Expr::Unary { arg, .. } => unary(UnaryOp::Neg, differentiate_expr(arg, var)),
-        Expr::Binary { op, lhs, rhs, .. } => match op {
-            BinaryOp::Add | BinaryOp::Sub => binary(
-                *op,
-                differentiate_expr(lhs, var),
-                differentiate_expr(rhs, var),
-            ),
-            BinaryOp::Mul => binary(
-                BinaryOp::Add,
-                binary(BinaryOp::Mul, differentiate_expr(lhs, var), *rhs.clone()),
-                binary(BinaryOp::Mul, *lhs.clone(), differentiate_expr(rhs, var)),
-            ),
-            BinaryOp::Div => binary(
-                BinaryOp::Div,
-                binary(
-                    BinaryOp::Sub,
-                    binary(BinaryOp::Mul, differentiate_expr(lhs, var), *rhs.clone()),
-                    binary(BinaryOp::Mul, *lhs.clone(), differentiate_expr(rhs, var)),
-                ),
-                binary(BinaryOp::Pow, *rhs.clone(), n(2.0)),
-            ),
-            BinaryOp::Pow => {
-                if let Expr::Number { value: p, .. } = **rhs {
-                    binary(
-                        BinaryOp::Mul,
-                        n(p),
-                        binary(
-                            BinaryOp::Mul,
-                            binary(BinaryOp::Pow, *lhs.clone(), n(p - 1.0)),
-                            differentiate_expr(lhs, var),
-                        ),
-                    )
-                } else {
-                    n(0.0)
-                }
-            }
-            _ => n(0.0),
-        },
-        Expr::Call { function, args, .. } if args.len() == 1 => {
-            let x = &args[0];
-            let dx = differentiate_expr(x, var);
-            let outer = match function.as_str() {
-                "sin" => call("cos", vec![x.clone()]),
-                "cos" => unary(UnaryOp::Neg, call("sin", vec![x.clone()])),
-                "exp" => call("exp", vec![x.clone()]),
-                "log" | "ln" => binary(BinaryOp::Div, n(1.0), x.clone()),
-                _ => n(0.0),
-            };
-            binary(BinaryOp::Mul, outer, dx)
-        }
-        Expr::Call { .. } | Expr::Index { .. } | Expr::Vector { .. } => n(0.0),
-    }
+pub fn differentiate_expr(expr: &Expr, var: &str) -> Result<Expr, ScientificError> {
+    crate::algebra::differentiate_expr(expr, var)
 }
 
 fn table_evaluate(
@@ -2770,7 +2694,7 @@ pub fn validate_quantities(
 }
 
 /// Resolve authored unit symbols and unqualified kind names against a Quantitas registry, then
-/// return the canonical quantity. The returned value is a Quantitas type, not a Resolvent wrapper.
+/// return the canonical quantity. The returned value is a Quantitas type, not a Scientia wrapper.
 pub fn canonicalize_authored_quantity(
     registry: &UnitRegistry,
     literal: &QuantityLiteral,
@@ -2871,7 +2795,7 @@ model NonlinearHeat {
         };
         let mut env = BTreeMap::new();
         env.insert("T".into(), 300.0);
-        let d = eval_expr(&differentiate_expr(&expr, "T"), &env).unwrap();
+        let d = eval_expr(&differentiate_expr(&expr, "T").unwrap(), &env).unwrap();
         assert!((d - 0.5).abs() < 1e-12);
     }
 

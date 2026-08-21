@@ -28,14 +28,14 @@ model Maxwell {
 
 fn fixture_path() -> PathBuf {
     std::env::temp_dir().join(format!(
-        "resolvent-cli-models-{}-{}.res",
+        "scientia-cli-models-{}-{}.res",
         std::process::id(),
         std::thread::current().name().unwrap_or("test")
     ))
 }
 
 fn run(arguments: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_resolvent"))
+    Command::new(env!("CARGO_BIN_EXE_scientia"))
         .args(arguments)
         .output()
         .unwrap()
@@ -49,7 +49,7 @@ fn model_qualified_selectors_address_every_model_aware_command() {
     let cases = [
         ("form", "Mixed:mixed_form", "\"model\": \"Mixed\""),
         ("requirements", "Mixed:mixed_form", "\"model\": \"Mixed\""),
-        ("operator", "Mixed:mixed_form", "resolvent-tensor-program/1"),
+        ("operator", "Mixed:mixed_form", "scientia-tensor-program/1"),
         ("derive-form", "Maxwell:balance", "\"model\": \"Maxwell\""),
         (
             "derive-requirements",
@@ -59,7 +59,7 @@ fn model_qualified_selectors_address_every_model_aware_command() {
         (
             "derive-operator",
             "Maxwell:balance",
-            "resolvent-operator-factorization/1",
+            "scientia-operator-factorization/1",
         ),
         ("coupling", "Mixed", "mixed_form"),
         ("structural", "Maxwell", "\"n_equations\": 1"),

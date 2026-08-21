@@ -1,4 +1,4 @@
-use resolvent::{format_scientific_module, parse_scientific_module, semantic_digest};
+use scientia::{format_scientific_module, parse_scientific_module, semantic_digest};
 
 const SOURCE: &str = r#"
 module acceptance.source;

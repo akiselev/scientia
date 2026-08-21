@@ -1,4 +1,4 @@
-use resolvent::{
+use scientia::{
     BlockKind, IncidenceSystem, compile_schedule, compile_schedule_without_tearing,
     maximum_matching,
 };

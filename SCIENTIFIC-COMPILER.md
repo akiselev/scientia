@@ -1,8 +1,8 @@
-# Resolvent scientific compiler
+# Scientia scientific compiler
 
 ## Purpose
 
-Resolvent turns authored scientific meaning into inspectable mathematical artifacts. It stops at
+Scientia turns authored scientific meaning into inspectable mathematical artifacts. It stops at
 the local structured-kernel boundary. Concrete discretization, coupled runtime state, and solver
 policy are separate concerns with separate owners.
 
@@ -27,10 +27,10 @@ temporary representations.
 ### Quantitas
 
 Owns exact dimensions, rational exponents, quantity-kind identity, units, registry provenance, and
-canonical quantities. `.res` declarations carry Quantitas types directly. Resolvent does not wrap
+canonical quantities. `.res` declarations carry Quantitas types directly. Scientia does not wrap
 or mirror them.
 
-### Resolvent
+### Scientia
 
 Owns:
 
@@ -43,14 +43,14 @@ Owns:
 - tensor/QFunction/local-operator factorization; and
 - evidence for symbolic and semantic transformations.
 
-Resolvent does not own meshes, global degrees of freedom, finite-element tables, assembly, time
+Scientia does not own meshes, global degrees of freedom, finite-element tables, assembly, time
 integration, nonlinear solves, device code generation, or product orchestration.
 
 ### Malleus
 
 Owns the schedule-independent local kernel IR, validation, derivative products, schedule choices,
-and executable backends. Resolvent constructs Malleus types directly; Malleus never imports
-Resolvent and has no scientific vocabulary.
+and executable backends. Scientia constructs Malleus types directly; Malleus never imports
+Scientia and has no scientific vocabulary.
 
 ### Downstream
 

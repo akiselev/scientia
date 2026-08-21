@@ -1,5 +1,5 @@
 use quantitas::UnitRegistry;
-use resolvent::{
+use scientia::{
     IncidenceSystem, SemanticModel, SemanticModule, SourceDiagnostic, compile_schedule,
     compile_variational_form, derive_coupling_graph, derive_variational_form, elaborate_module,
     factor_operator, format_scientific_module, infer_form_requirements,
@@ -70,7 +70,7 @@ fn run() -> Result<(), String> {
             println!(
                 "{}",
                 serde_json::to_string_pretty(&serde_json::json!({
-                    "schema":"resolvent-scientific-lock/1",
+                    "schema":"scientia-scientific-lock/1",
                     "module":module.name,
                     "source_digest":semantic_digest(&module),
                     "semantic_digest":semantic_arena_digest(&semantic)
@@ -108,7 +108,7 @@ fn run() -> Result<(), String> {
             println!(
                 "{}",
                 serde_json::to_string_pretty(&serde_json::json!({
-                    "schema": "resolvent-scientific-inspect/1",
+                    "schema": "scientia-scientific-inspect/1",
                     "module": module.name,
                     "semantic_digest": semantic_digest(&module),
                     "semantic_arena_digest": semantic_arena_digest(&semantic),
@@ -184,7 +184,7 @@ fn run() -> Result<(), String> {
             println!(
                 "{}",
                 serde_json::to_string_pretty(&serde_json::json!({
-                    "schema": "resolvent-scientific-explain/1",
+                    "schema": "scientia-scientific-explain/1",
                     "model": model.name,
                     "selector": edge_selector,
                     "edges": edges,
@@ -293,7 +293,7 @@ fn run() -> Result<(), String> {
 }
 
 fn usage() -> String {
-    "usage: resolvent <check|fmt|parse|elaborate|inspect|freeze|explain|coupling|structural|form|derive-form|requirements|derive-requirements|operator|derive-operator> [--json] <model.res> [model|model:item] [detail]".into()
+    "usage: scientia <check|fmt|parse|elaborate|inspect|freeze|explain|coupling|structural|form|derive-form|requirements|derive-requirements|operator|derive-operator> [--json] <model.res> [model|model:item] [detail]".into()
 }
 
 fn select_model<'a>(
@@ -371,9 +371,9 @@ fn render_diagnostics(source: &str, diagnostics: &[SourceDiagnostic], json: bool
                 line,
                 column,
                 match diagnostic.severity {
-                    resolvent::SourceSeverity::Note => "note",
-                    resolvent::SourceSeverity::Warning => "warning",
-                    resolvent::SourceSeverity::Error => "error",
+                    scientia::SourceSeverity::Note => "note",
+                    scientia::SourceSeverity::Warning => "warning",
+                    scientia::SourceSeverity::Error => "error",
                 },
                 diagnostic.code,
                 diagnostic.message

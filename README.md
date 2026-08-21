@@ -1,20 +1,21 @@
-# Resolvent
+# Scientia
 
-Resolvent is the `.res` language and mathematical compiler for Sinbad. It owns source parsing,
+Scientia is the `.res` language and mathematical compiler for Sinbad. It owns source parsing,
 scientific semantics, variational and sibling method-family meaning, structural equation analysis,
 property and constitutive declarations, and evidence attached to semantic transformations.
 
 The repository deliberately has a narrow dependency direction:
 
 ```text
-Quantitas -> Resolvent -> Malleus
-                  |
-                  +-> downstream realization in Finitum
+Quantitas -----> Scientia -----> Malleus
+Resolvent CAS --^     |
+                       +-> downstream realization in Finitum
 ```
 
 - Quantitas supplies the shared identity of dimensions, quantity kinds, units, and canonical
   quantities.
-- Resolvent lowers local numerical work directly into Malleus-owned structured kernel types.
+- Resolvent supplies consumer-neutral exact algebra and symbolic differentiation.
+- Scientia lowers local numerical work directly into Malleus-owned structured kernel types.
 - Finitum owns meshes, basis tabulations, degrees of freedom, constraints, quadrature execution,
   assembly, and matrix-free global operators.
 - Krasis owns coupled runtime state. Solverang owns numerical algorithms. Sinbad owns the product.
@@ -24,7 +25,7 @@ repository. Git history is the archive for the removed implementation.
 
 ## Current compiler surface
 
-Resolvent currently provides:
+Scientia currently provides:
 
 - a recovering parser, canonical formatter, and deterministic module resolver for `.res` modules;
 - a source-syntax tree with byte-precise expression/reference spans;
@@ -79,20 +80,20 @@ sesquilinear one.
 ## Command line
 
 ```console
-cargo run --bin resolvent -- check examples/nonlinear_heat.res
-cargo run --bin resolvent -- fmt examples/nonlinear_heat.res
-cargo run --bin resolvent -- parse examples/nonlinear_heat.res
-cargo run --bin resolvent -- elaborate examples/nonlinear_heat.res
-cargo run --bin resolvent -- coupling examples/nonlinear_heat.res
-cargo run --bin resolvent -- structural examples/nonlinear_heat.res
-cargo run --bin resolvent -- form path/to/model.res form_name
-cargo run --bin resolvent -- derive-form path/to/model.res equation_name
-cargo run --bin resolvent -- requirements path/to/model.res form_name
-cargo run --bin resolvent -- derive-requirements path/to/model.res equation_name
-cargo run --bin resolvent -- operator path/to/model.res form_name
-cargo run --bin resolvent -- derive-operator path/to/model.res equation_name
-cargo run --bin resolvent -- requirements path/to/multi.res ModelName:form_name
-cargo run --bin resolvent -- structural path/to/multi.res ModelName
+cargo run --bin scientia -- check examples/nonlinear_heat.res
+cargo run --bin scientia -- fmt examples/nonlinear_heat.res
+cargo run --bin scientia -- parse examples/nonlinear_heat.res
+cargo run --bin scientia -- elaborate examples/nonlinear_heat.res
+cargo run --bin scientia -- coupling examples/nonlinear_heat.res
+cargo run --bin scientia -- structural examples/nonlinear_heat.res
+cargo run --bin scientia -- form path/to/model.res form_name
+cargo run --bin scientia -- derive-form path/to/model.res equation_name
+cargo run --bin scientia -- requirements path/to/model.res form_name
+cargo run --bin scientia -- derive-requirements path/to/model.res equation_name
+cargo run --bin scientia -- operator path/to/model.res form_name
+cargo run --bin scientia -- derive-operator path/to/model.res equation_name
+cargo run --bin scientia -- requirements path/to/multi.res ModelName:form_name
+cargo run --bin scientia -- structural path/to/multi.res ModelName
 ```
 
 All commands other than `parse` and `fmt` require successful typed elaboration. `parse` is
@@ -118,4 +119,4 @@ cargo clippy --all-targets -- -D warnings
 cargo test --all-targets
 ```
 
-Resolvent is dual-licensed under MIT or Apache-2.0.
+Scientia is dual-licensed under MIT or Apache-2.0.

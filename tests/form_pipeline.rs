@@ -1,5 +1,5 @@
 use quantitas::UnitRegistry;
-use resolvent::{
+use scientia::{
     BoundaryTermDisposition, DifferentialOperator, FormArgumentRole, FormAssumption,
     FormCompileError, FormComplexConvention, FormEvaluation, FormEvaluationContext, FormSample,
     FormSide, FormTransformation, FormValue, InputEvaluation, LocalInputRole,
@@ -25,7 +25,7 @@ model Diffusion {
 "#;
 
 // Repository-local FC2 fixtures. Their mathematical shapes mirror Sinbad's product corpus, but
-// Resolvent tests must remain buildable without a sibling Sinbad checkout.
+// Scientia tests must remain buildable without a sibling Sinbad checkout.
 const POISSON_SOURCE: &str = r#"
 module fixture.poisson;
 model Poisson {
@@ -124,7 +124,7 @@ fn typed_identities_and_roles_survive_form_factorization() {
     assert_eq!(diffusion.inputs[1].role, LocalInputRole::TestBasis);
     assert_eq!(
         diffusion.inputs[2].role,
-        LocalInputRole::PhysicalField(resolvent::scientific::FieldRole::Coefficient)
+        LocalInputRole::PhysicalField(scientia::scientific::FieldRole::Coefficient)
     );
     assert!(
         diffusion.inputs[..2]
@@ -149,7 +149,7 @@ fn typed_identities_and_roles_survive_form_factorization() {
 fn presentation_changes_do_not_change_form_or_program_digests() {
     let registry = UnitRegistry::si_bootstrap();
     let compact = compile_semantics(FORM_SOURCE, &registry).unwrap();
-    let formatted = resolvent::format_scientific_module(&compact.source);
+    let formatted = scientia::format_scientific_module(&compact.source);
     let formatted = compile_semantics(&formatted, &registry).unwrap();
     let first = compile_variational_form(&compact.semantic, "Diffusion", "residual").unwrap();
     let second = compile_variational_form(&formatted.semantic, "Diffusion", "residual").unwrap();
@@ -233,7 +233,7 @@ fn poisson_derivation_records_ibp_and_eliminated_boundary_term() {
         matches!(
             transformation,
             FormTransformation::IntegrateByParts {
-                operator: resolvent::DifferentialOperator::Divergence,
+                operator: scientia::DifferentialOperator::Divergence,
                 ..
             }
         )
@@ -565,7 +565,7 @@ model GradientEquation {
         ),
         Err(FormCompileError::InvalidDerivedDifferential {
             operator: DifferentialOperator::Divergence,
-            shape: SemanticShape::Numeric(resolvent::scientific::ValueShape::Scalar),
+            shape: SemanticShape::Numeric(scientia::scientific::ValueShape::Scalar),
         })
     ));
 }

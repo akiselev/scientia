@@ -16,8 +16,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use thiserror::Error;
 
-pub const LOCAL_FORM_PROGRAM_SCHEMA: &str = "resolvent-local-form-program/3";
-pub const KERNEL_LOWERING_SCHEMA: &str = "resolvent-kernel-lowering/1";
+pub const LOCAL_FORM_PROGRAM_SCHEMA: &str = "scientia-local-form-program/3";
+pub const KERNEL_LOWERING_SCHEMA: &str = "scientia-kernel-lowering/1";
 
 /// Mathematical role of an externally bound value in point-local form evaluation.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -66,7 +66,7 @@ pub struct LocalOutput {
     pub ty: SemanticType,
 }
 
-/// Resolvent kernels are QFunctions evaluated at one already-selected quadrature point.
+/// Scientia kernels are QFunctions evaluated at one already-selected quadrature point.
 /// Quadrature selection and traversal belong to Finitum's realization plan.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

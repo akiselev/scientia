@@ -1,6 +1,6 @@
 use malleus::{BufferBinding, ExecutableModule, Interpreter, OperandId, validate_module};
 use quantitas::UnitRegistry;
-use resolvent::{
+use scientia::{
     DenseTensor, InputSourceRequirement, StructuredDerivativeContract, StructuredPointKernelBundle,
     TensorInputId, TensorInputRole, compile_semantics, derive_variational_form, factor_operator,
     infer_form_requirements, interpret_qfunction, lower_operator_kernels,
@@ -20,8 +20,8 @@ model Poisson {
 "#;
 
 fn poisson() -> (
-    resolvent::OperatorFactorization,
-    resolvent::StructuredOperatorKernels,
+    scientia::OperatorFactorization,
+    scientia::StructuredOperatorKernels,
 ) {
     let compilation = compile_semantics(POISSON, &UnitRegistry::si_bootstrap()).unwrap();
     let form = derive_variational_form(&compilation.semantic, "Poisson", "balance").unwrap();
@@ -125,13 +125,13 @@ fn fc5_lowers_complete_validated_malleus_bundles_and_matches_fc4_jvp() {
         assert_eq!(bundle.parameter.mode, malleus::DerivativeMode::Jvp);
         assert_eq!(
             bundle.vjp.purpose,
-            resolvent::StructuredDerivativePurpose::StateAdjoint
+            scientia::StructuredDerivativePurpose::StateAdjoint
         );
         assert!(
             bundle
                 .receipt
                 .derivative_evidence
-                .contains(&resolvent::StructuredDerivativeEvidence::StructuredChainRuleIdentity)
+                .contains(&scientia::StructuredDerivativeEvidence::StructuredChainRuleIdentity)
         );
     }
 
@@ -175,7 +175,7 @@ fn fc5_lowers_complete_validated_malleus_bundles_and_matches_fc4_jvp() {
 fn complete_structured_kernel_bundle_round_trips_and_revalidates() {
     let (_, kernels) = poisson();
     let encoded = serde_json::to_vec(&kernels).unwrap();
-    let decoded: resolvent::StructuredOperatorKernels = serde_json::from_slice(&encoded).unwrap();
+    let decoded: scientia::StructuredOperatorKernels = serde_json::from_slice(&encoded).unwrap();
     assert_eq!(decoded, kernels);
     for bundle in decoded.bundles {
         validate_module(bundle.module).unwrap();
@@ -386,7 +386,7 @@ fn malformed_fc4_shapes_and_derivative_receipts_are_refused() {
         .shape = vec![3];
     assert!(matches!(
         lower_operator_kernels(&factorization),
-        Err(resolvent::StructuredLoweringError::Shape(message))
+        Err(scientia::StructuredLoweringError::Shape(message))
             if message.contains("has extent 3")
     ));
 
@@ -394,7 +394,7 @@ fn malformed_fc4_shapes_and_derivative_receipts_are_refused() {
     factorization.integrals[0].jvp.derivative_receipt = None;
     assert!(matches!(
         lower_operator_kernels(&factorization),
-        Err(resolvent::StructuredLoweringError::SourceJvp(message))
+        Err(scientia::StructuredLoweringError::SourceJvp(message))
             if message.contains("has no derivative receipt")
     ));
 
@@ -411,14 +411,14 @@ fn malformed_fc4_shapes_and_derivative_receipts_are_refused() {
         })
         .unwrap();
     let reduced = diffusion.primal.outputs[0].expression.clone();
-    diffusion.primal.outputs[0].expression = resolvent::TensorScalarExpr::Binary {
-        op: resolvent::TensorBinaryOp::Add,
+    diffusion.primal.outputs[0].expression = scientia::TensorScalarExpr::Binary {
+        op: scientia::TensorBinaryOp::Add,
         lhs: Box::new(reduced),
-        rhs: Box::new(resolvent::TensorScalarExpr::Constant { value: 1.0 }),
+        rhs: Box::new(scientia::TensorScalarExpr::Constant { value: 1.0 }),
     };
     assert!(matches!(
         lower_operator_kernels(&factorization),
-        Err(resolvent::StructuredLoweringError::Axis(message))
+        Err(scientia::StructuredLoweringError::Axis(message))
             if message.contains("enclosing nest")
     ));
 
@@ -442,19 +442,19 @@ fn malformed_fc4_shapes_and_derivative_receipts_are_refused() {
         .unwrap()
         .id;
     let free_axis = diffusion.primal.outputs[0].free_axes[0].id;
-    let resolvent::TensorScalarExpr::Reduction { expression, .. } =
+    let scientia::TensorScalarExpr::Reduction { expression, .. } =
         &mut diffusion.primal.outputs[0].expression
     else {
         panic!("Poisson diffusion output must remain a reduction fixture");
     };
     let existing = std::mem::replace(
         expression,
-        Box::new(resolvent::TensorScalarExpr::Constant { value: 0.0 }),
+        Box::new(scientia::TensorScalarExpr::Constant { value: 0.0 }),
     );
-    **expression = resolvent::TensorScalarExpr::Binary {
-        op: resolvent::TensorBinaryOp::Add,
+    **expression = scientia::TensorScalarExpr::Binary {
+        op: scientia::TensorBinaryOp::Add,
         lhs: existing,
-        rhs: Box::new(resolvent::TensorScalarExpr::Input {
+        rhs: Box::new(scientia::TensorScalarExpr::Input {
             input: active,
             indices: vec![free_axis],
         }),
@@ -482,14 +482,14 @@ fn malformed_fc4_shapes_and_derivative_receipts_are_refused() {
         ..malleus::NumericPolicy::default()
     };
     assert!(matches!(
-        resolvent::lower_operator_kernels_with_policy(&factorization, f32_policy),
-        Err(resolvent::StructuredLoweringError::ScalarPolicy(message))
+        scientia::lower_operator_kernels_with_policy(&factorization, f32_policy),
+        Err(scientia::StructuredLoweringError::ScalarPolicy(message))
             if message.contains("requires real64")
     ));
 }
 
 fn qfunction_inputs(
-    integral: &resolvent::IntegralOperatorFactorization,
+    integral: &scientia::IntegralOperatorFactorization,
     active_value: Vec<f64>,
     external_value: f64,
 ) -> BTreeMap<TensorInputId, Vec<f64>> {

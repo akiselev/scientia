@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use thiserror::Error;
 
-pub const OPERATOR_SYSTEM_SCHEMA: &str = "resolvent-operator-system/1";
+pub const OPERATOR_SYSTEM_SCHEMA: &str = "scientia-operator-system/1";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct OperatorBlockCoordinate {

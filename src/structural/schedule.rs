@@ -1,7 +1,7 @@
 //! Causalization pipeline over [`IncidenceSystem`]: maximum matching,
 //! equation dependency graph, SCC/BLT decomposition and deterministic greedy tearing.
 //!
-//! This is intentionally a projection of Resolvent's canonical scientific model; it does not
+//! This is intentionally a projection of Scientia's canonical scientific model; it does not
 //! introduce a second equation AST.
 
 use super::scc::{Digraph, tarjan_scc};

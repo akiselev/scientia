@@ -19,7 +19,8 @@ Do not weaken tests, semantic gates, evidence requirements, or ownership boundar
 ## Compiler boundaries
 
 - Keep one `.res` source and semantic model. Do not add alternate ASTs or mirror Quantitas types.
-- Resolvent may depend on Quantitas and Malleus. Malleus must never depend on Resolvent.
+- Scientia may depend on Quantitas, Resolvent, and Malleus. Resolvent and Malleus must never
+  depend on Scientia.
 - Keep meshes, concrete elements/DOFs, global operators, runtime state, and solver policy out of
   this repository.
 - Mathematical transformations need explicit provenance and independent validation; removed code

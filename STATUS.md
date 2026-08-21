@@ -1,20 +1,21 @@
-# Resolvent status
+# Scientia status
 
 Updated: 2026-08-21
 
 Branch: `master`
 
-Milestone: FC11 complete compiler-artifact serialization
+Milestone: R1 standalone scientific compiler extraction
 
 ## Role
 
-Resolvent owns `.res` source and scientific/form semantics. It parses and resolves modules,
+Scientia owns `.res` source and scientific/form semantics. It parses and resolves modules,
 maintains one canonical model, performs semantic and structural analysis, derives variational and
 local mathematical artifacts, and lowers local work into Malleus-owned structured kernel types.
 
-Quantitas owns dimensions, quantity kinds, units, and registries. Malleus owns local kernel IR and
-execution. Finitum owns concrete discretization/global operators. Krasis owns coupled runtime
-state. Solverang owns numerical algorithms. Sinbad owns product orchestration.
+Quantitas owns dimensions, quantity kinds, units, and registries. Resolvent owns consumer-neutral
+exact algebra and symbolic differentiation. Malleus owns local kernel IR and execution. Finitum
+owns concrete discretization/global operators. Krasis owns coupled runtime state. Solverang owns
+numerical algorithms. Sinbad owns product orchestration.
 
 ## Implemented
 
@@ -23,8 +24,8 @@ state. Solverang owns numerical algorithms. Sinbad owns product orchestration.
 - One typed `SemanticModel` arena with stable domain, region, symbol, expression, and declaration
   identities; resolved roles and references; shapes and axes; Quantitas dimensions/kinds/units;
   domain frames; typed declaration payloads; and presentation-invariant semantic digest. The
-  typed-declaration wire shape is `resolvent-semantic/3`; variational forms are
-  `resolvent-variational-form/4` and record the physical source of generated test spaces.
+  typed-declaration wire shape is `scientia-semantic/3`; variational forms are
+  `scientia-variational-form/4` and record the physical source of generated test spaces.
 - Stable structured diagnostics with exact spans for malformed syntax, imports, domains, names,
   units, quantity kinds, roles, shapes, axes, dimensions, and frames.
 - `compile_semantics` is the complete FC1 library boundary. CLI `check`, `inspect`, `freeze`, and
@@ -32,6 +33,8 @@ state. Solverang owns numerical algorithms. Sinbad owns product orchestration.
 - Direct Quantitas quantity/unit types and validation; no internal quantity representation exists.
 - Property tables/expressions, derivative contracts, constitutive semantics, coupling graphs,
   time/state semantics, and evidence profiles.
+- Scientific property differentiation delegates exact algebra to Resolvent and explicitly refuses
+  unsupported scientific expression forms; Scientia retains scientific spans and diagnostics.
 - Structural incidence, matching, SCC/BLT, tearing, alias, and DAE planning projected directly
   from `ScientificModel`; incidence follows model-defined value, property, and constitutive chains
   to the same transitive field dependencies reported by coupling analysis.
@@ -123,7 +126,7 @@ state. Solverang owns numerical algorithms. Sinbad owns product orchestration.
 - FV numerical flux and FD stencil requests lower to validated affine Malleus point kernels;
   concrete topology, matrices, pairs, and boundary quadrature remain downstream-owned. Stable
   `METHOD_*` errors refuse incompatible domains, equation structure, shapes, and kernel requests.
-- One `resolvent` CLI for check, format, parse, inspect, freeze, explain, coupling, structural
+- One `scientia` CLI for check, format, parse, inspect, freeze, explain, coupling, structural
   analysis, forms, requirements, and operators. Multi-model modules require explicit selection;
   form/equation commands accept `Model:item` and model-wide commands accept `Model`.
 
@@ -142,12 +145,13 @@ Git history is the archive. None of the removed implementation is an acceptance 
 Verified locally on 2026-08-21:
 
 - `cargo fmt --all -- --check` -- passed.
-- `cargo check --all-targets` -- passed.
-- `cargo clippy --all-targets -- -D warnings` -- passed.
-- `cargo test --all-targets` -- passed: 84 tests, 0 failed.
-- `cargo doc --no-deps` -- passed.
-- `cargo test --doc` -- passed.
-- `cargo run --quiet --bin resolvent -- check` over all 50 Sinbad corpus models -- passed: 50 of
+- `cargo check --locked --workspace --all-targets` -- passed.
+- `cargo clippy --locked --workspace --all-targets -- -D warnings` -- passed.
+- `cargo test --locked --workspace --all-targets` -- passed: 84 tests, 0 failed.
+- `RUSTDOCFLAGS='-D warnings' cargo doc --locked --workspace --no-deps` -- passed.
+- `cargo test --locked --workspace --doc` -- passed.
+- `git diff --check` -- passed.
+- `cargo run --quiet --bin scientia -- check` over all 50 Sinbad corpus models -- passed: 50 of
   50 parsed and elaborated.
 - `derive-form` passed for Poisson, transient diffusion, nonlinear heat, linear elasticity, and
   both Stokes equations; the same set is covered by the FC2 integration gate.
@@ -178,10 +182,10 @@ Verified locally on 2026-08-21:
 - FC11 round-trip gates serialize and deserialize a complete FV method program, a Poisson
   primal/JVP/VJP/parameter bundle, and a mixed Stokes operator system, then revalidate every nested
   Malleus module.
-- Resolvent tests contain no compile-time or runtime path into Sinbad's product corpus; standalone
+- Scientia tests contain no compile-time or runtime path into Sinbad's product corpus; standalone
   validation uses only repository-local fixtures plus the declared Quantitas/Malleus dependencies.
-- `cargo run --quiet --bin resolvent -- check examples/nonlinear_heat.res` -- passed.
-- `cargo run --quiet --bin resolvent -- structural examples/nonlinear_heat.res` -- passed with
+- `cargo run --quiet --bin scientia -- check examples/nonlinear_heat.res` -- passed.
+- `cargo run --quiet --bin scientia -- structural examples/nonlinear_heat.res` -- passed with
   one explicit structural block.
 
 ## Cross-repository contract
@@ -190,7 +194,7 @@ Verified locally on 2026-08-21:
   `734d78cd6ff516afee54201bc70cd59fd34e67e3`; API types used directly include `Dimension`,
   `Quantity`, `QuantityLiteral`, `QuantityKindId`, `UnitId`, and `UnitRegistry`.
 - Malleus path: `../malleus`, validated at
-  `09e27a6a23a6a5eab6f881ac0bec9db23046d58e`; Resolvent constructs Malleus modules, operands,
+  `09e27a6a23a6a5eab6f881ac0bec9db23046d58e`; Scientia constructs Malleus modules, operands,
   affine maps, expressions, derivative requests, statements, and numeric policies directly.
 - Public downstream sequence: `compile_variational_form`/`derive_variational_form` ->
   `infer_form_requirements` -> `factor_operator` -> `lower_operator_kernels`. The existing narrow

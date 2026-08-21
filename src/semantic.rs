@@ -44,7 +44,7 @@ arena_id!(SymbolId);
 arena_id!(ExprId);
 arena_id!(DeclarationId);
 
-pub const SEMANTIC_SCHEMA: &str = "resolvent-semantic/3";
+pub const SEMANTIC_SCHEMA: &str = "scientia-semantic/3";
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SemanticModule {

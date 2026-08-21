@@ -1,5 +1,5 @@
 use quantitas::UnitRegistry;
-use resolvent::{
+use scientia::{
     BasisAdjoint, DenseTensor, DerivativeMode, ElementExecutionContext, FormComplexConvention,
     GeometryPreprocessingRequirement, InputSourceRequirement, OperatorAction, OperatorStage,
     QFunctionConstruction, TensorAxisRole, TensorBinaryOp, TensorCompileError, TensorInputRole,
@@ -33,8 +33,8 @@ model ValueGradient {
 "#;
 
 fn poisson_factorization() -> (
-    resolvent::SemanticCompilation,
-    resolvent::OperatorFactorization,
+    scientia::SemanticCompilation,
+    scientia::OperatorFactorization,
 ) {
     let compilation = compile_semantics(POISSON, &UnitRegistry::si_bootstrap()).unwrap();
     let form = derive_variational_form(&compilation.semantic, "Poisson", "balance").unwrap();
@@ -58,7 +58,7 @@ fn contains_reduction(expression: &TensorScalarExpr) -> bool {
     }
 }
 
-fn contains_input(expression: &TensorScalarExpr, input: resolvent::TensorInputId) -> bool {
+fn contains_input(expression: &TensorScalarExpr, input: scientia::TensorInputId) -> bool {
     match expression {
         TensorScalarExpr::Input {
             input: candidate, ..
@@ -94,7 +94,7 @@ fn fc4_emits_explicit_indexed_qfunctions_and_operator_stages() {
         .unwrap();
     assert_eq!(
         diffusion.tensor_program.scalar_semantics,
-        resolvent::TensorScalarSemantics::Real64
+        scientia::TensorScalarSemantics::Real64
     );
     assert_eq!(diffusion.tensor_program.output.shape, Vec::<usize>::new());
     assert!(
@@ -102,7 +102,7 @@ fn fc4_emits_explicit_indexed_qfunctions_and_operator_stages() {
             .tensor_program
             .inputs
             .iter()
-            .any(|input| input.role == resolvent::TensorProgramInputRole::Test)
+            .any(|input| input.role == scientia::TensorProgramInputRole::Test)
     );
     assert_eq!(
         diffusion.primal.receipt.source_tensor_program_digest,
@@ -116,13 +116,13 @@ fn fc4_emits_explicit_indexed_qfunctions_and_operator_stages() {
         .unwrap();
     assert_eq!(flux.free_axes.len(), 1);
     assert_eq!(flux.free_axes[0].extent, 2);
-    assert_eq!(flux.side, resolvent::TensorSide::Cell);
+    assert_eq!(flux.side, scientia::TensorSide::Cell);
     assert_eq!(flux.basis_adjoint, BasisAdjoint::Transpose);
     assert!(contains_reduction(&flux.expression));
     assert!(diffusion.stages.iter().any(|stage| matches!(
         stage,
         OperatorStage::Restriction {
-            direction: resolvent::RestrictionDirection::Gather,
+            direction: scientia::RestrictionDirection::Gather,
             ..
         }
     )));
@@ -147,7 +147,7 @@ fn fc4_emits_explicit_indexed_qfunctions_and_operator_stages() {
     assert!(diffusion.stages.iter().any(|stage| matches!(
         stage,
         OperatorStage::Restriction {
-            direction: resolvent::RestrictionDirection::Scatter,
+            direction: scientia::RestrictionDirection::Scatter,
             ..
         }
     )));
@@ -183,13 +183,13 @@ fn fc4_emits_explicit_indexed_qfunctions_and_operator_stages() {
     );
 
     let wire = serde_json::to_string(&factorization).unwrap();
-    let round_trip: resolvent::OperatorFactorization = serde_json::from_str(&wire).unwrap();
+    let round_trip: scientia::OperatorFactorization = serde_json::from_str(&wire).unwrap();
     assert_eq!(round_trip, factorization);
 }
 
 fn element_context(
-    compilation: &resolvent::SemanticCompilation,
-    factorization: &resolvent::OperatorFactorization,
+    compilation: &scientia::SemanticCompilation,
+    factorization: &scientia::OperatorFactorization,
     unknown_values: [f64; 3],
     direction_values: [f64; 3],
 ) -> ElementExecutionContext {
@@ -228,10 +228,10 @@ fn element_context(
                     .basis
                     .entry(input.binding.clone())
                     .or_insert_with(|| match input.binding.evaluation.derivative {
-                        resolvent::DerivativeEvaluation::Value => {
+                        scientia::DerivativeEvaluation::Value => {
                             DenseTensor::new(vec![1, 3], vec![1.0 / 3.0; 3]).unwrap()
                         }
-                        resolvent::DerivativeEvaluation::Gradient => {
+                        scientia::DerivativeEvaluation::Gradient => {
                             DenseTensor::new(vec![1, 3, 2], vec![-1.0, -1.0, 1.0, 0.0, 0.0, 1.0])
                                 .unwrap()
                         }
@@ -252,10 +252,10 @@ fn element_context(
                 .basis
                 .entry(output.binding.clone())
                 .or_insert_with(|| match output.binding.evaluation.derivative {
-                    resolvent::DerivativeEvaluation::Value => {
+                    scientia::DerivativeEvaluation::Value => {
                         DenseTensor::new(vec![1, 3], vec![1.0 / 3.0; 3]).unwrap()
                     }
-                    resolvent::DerivativeEvaluation::Gradient => {
+                    scientia::DerivativeEvaluation::Gradient => {
                         DenseTensor::new(vec![1, 3, 2], vec![-1.0, -1.0, 1.0, 0.0, 0.0, 1.0])
                             .unwrap()
                     }
@@ -321,9 +321,9 @@ fn independent_p1_triangle_fixture_validates_poisson_residual_and_jvp() {
 fn tensor_program_digest_is_presentation_invariant() {
     let registry = UnitRegistry::si_bootstrap();
     let first = compile_semantics(POISSON, &registry).unwrap();
-    let formatted_source = resolvent::format_scientific_module(&first.source);
+    let formatted_source = scientia::format_scientific_module(&first.source);
     let second = compile_semantics(&formatted_source, &registry).unwrap();
-    let compile = |compilation: &resolvent::SemanticCompilation| {
+    let compile = |compilation: &scientia::SemanticCompilation| {
         let form = derive_variational_form(&compilation.semantic, "Poisson", "balance").unwrap();
         let requirements = infer_form_requirements(&compilation.semantic, &form).unwrap();
         factor_operator(&form, &requirements).unwrap()
@@ -345,7 +345,7 @@ fn scalar_source_dual_keeps_explicit_negative_sign() {
     assert!(matches!(
         source.primal.outputs[0].expression,
         TensorScalarExpr::Unary {
-            op: resolvent::TensorUnaryOp::Neg,
+            op: scientia::TensorUnaryOp::Neg,
             ..
         } | TensorScalarExpr::Binary {
             op: TensorBinaryOp::Mul,
@@ -372,18 +372,18 @@ fn shape_lookup_is_keyed_by_evaluation_not_requirement_order() {
     let trial = form
         .arguments
         .iter()
-        .find(|argument| argument.role == resolvent::FormArgumentRole::Trial)
+        .find(|argument| argument.role == scientia::FormArgumentRole::Trial)
         .unwrap()
         .symbol;
     let inputs = &factorization.integrals[0].tensor_program.inputs;
     assert!(inputs.iter().any(|input| {
         input.binding.symbol == trial
-            && input.binding.evaluation.derivative == resolvent::DerivativeEvaluation::Value
+            && input.binding.evaluation.derivative == scientia::DerivativeEvaluation::Value
             && input.shape.is_empty()
     }));
     assert!(inputs.iter().any(|input| {
         input.binding.symbol == trial
-            && input.binding.evaluation.derivative == resolvent::DerivativeEvaluation::Gradient
+            && input.binding.evaluation.derivative == scientia::DerivativeEvaluation::Gradient
             && input.shape == [2]
     }));
 }
@@ -399,9 +399,7 @@ fn malformed_derivative_shapes_and_active_sources_are_refused() {
         .find(|capture| {
             matches!(
                 capture.role,
-                resolvent::FormCaptureRole::PhysicalField(
-                    resolvent::scientific::FieldRole::Unknown
-                )
+                scientia::FormCaptureRole::PhysicalField(scientia::scientific::FieldRole::Unknown)
             )
         })
         .unwrap()
@@ -417,7 +415,7 @@ fn malformed_derivative_shapes_and_active_sources_are_refused() {
         .evaluations
         .first_mut()
         .unwrap();
-    evaluation.derivative = resolvent::DerivativeEvaluation::Divergence;
+    evaluation.derivative = scientia::DerivativeEvaluation::Divergence;
     assert!(matches!(
         factor_operator(&form, &invalid_shape),
         Err(TensorCompileError::Shape(message))

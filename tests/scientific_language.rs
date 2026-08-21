@@ -1,4 +1,4 @@
-use resolvent::{format_scientific_module, parse_scientific_module, semantic_digest};
+use scientia::{format_scientific_module, parse_scientific_module, semantic_digest};
 
 fn valid_module(index: usize) -> String {
     format!(
@@ -76,8 +76,8 @@ model Coupled {
 "#;
     let ma = parse_scientific_module(a).unwrap();
     let mb = parse_scientific_module(b).unwrap();
-    let mut ea = resolvent::derive_coupling_graph(&ma.models[0]).edges;
-    let mut eb = resolvent::derive_coupling_graph(&mb.models[0]).edges;
+    let mut ea = scientia::derive_coupling_graph(&ma.models[0]).edges;
+    let mut eb = scientia::derive_coupling_graph(&mb.models[0]).edges;
     ea.sort_by(|x, y| (&x.from, &x.to, &x.path).cmp(&(&y.from, &y.to, &y.path)));
     eb.sort_by(|x, y| (&x.from, &x.to, &x.path).cmp(&(&y.from, &y.to, &y.path)));
     assert_eq!(ea, eb);

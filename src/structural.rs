@@ -1,7 +1,7 @@
 //! Structural equation analysis over the canonical scientific model.
 //!
 //! Incidence, alias analysis, DAE/index analysis, matching, SCC/BLT and tearing are projections
-//! over [`ScientificModel`]. Resolvent does not maintain a
+//! over [`ScientificModel`]. Scientia does not maintain a
 //! second equation language for these passes.
 
 pub mod dae;

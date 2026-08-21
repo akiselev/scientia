@@ -21,8 +21,8 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 use thiserror::Error;
 
-pub const METHOD_PROGRAM_SCHEMA: &str = "resolvent-method-program/2";
-pub const AFFINE_METHOD_KERNEL_SCHEMA: &str = "resolvent-affine-method-kernel/1";
+pub const METHOD_PROGRAM_SCHEMA: &str = "scientia-method-program/2";
+pub const AFFINE_METHOD_KERNEL_SCHEMA: &str = "scientia-affine-method-kernel/1";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

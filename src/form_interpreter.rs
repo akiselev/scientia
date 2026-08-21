@@ -161,7 +161,7 @@ pub fn required_evaluations(
 }
 
 /// Interpret and accumulate weighted integral samples in caller-provided order.
-/// Quadrature construction and traversal remain outside Resolvent.
+/// Quadrature construction and traversal remain outside Scientia.
 pub fn interpret_form(
     form: &VariationalForm,
     samples: &[FormSample],

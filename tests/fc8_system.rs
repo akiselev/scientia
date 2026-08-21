@@ -2,7 +2,7 @@ use malleus::{
     AccessMode, BufferBinding, ExecutableModule, Interpreter, OperandId, validate_module,
 };
 use quantitas::UnitRegistry;
-use resolvent::{
+use scientia::{
     EvaluationSite, OPERATOR_SYSTEM_SCHEMA, OrientationRequirement, TensorSide,
     compile_authored_operator_system, compile_operator_system, compile_semantics,
 };
@@ -84,7 +84,7 @@ model TransportFacet {
 }
 "#;
 
-fn execute_primal_with_ones(bundle: &resolvent::StructuredPointKernelBundle) {
+fn execute_primal_with_ones(bundle: &scientia::StructuredPointKernelBundle) {
     let module = ExecutableModule::reference(validate_module(bundle.module.clone()).unwrap());
     let executable = &module.kernels()[bundle.primal_kernel_index];
     let kernel = executable.kernel().as_kernel();
@@ -159,7 +159,7 @@ fn complete_operator_system_round_trips_with_every_compiler_stage() {
     )
     .unwrap();
     let encoded = serde_json::to_vec(&system).unwrap();
-    let decoded: resolvent::OperatorSystem = serde_json::from_slice(&encoded).unwrap();
+    let decoded: scientia::OperatorSystem = serde_json::from_slice(&encoded).unwrap();
     assert_eq!(decoded, system);
     for bundle in decoded
         .blocks

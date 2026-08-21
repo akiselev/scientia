@@ -19,9 +19,9 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use thiserror::Error;
 
-pub const QFUNCTION_SCHEMA: &str = "resolvent-qfunction/1";
-pub const TENSOR_PROGRAM_SCHEMA: &str = "resolvent-tensor-program/1";
-pub const OPERATOR_FACTORIZATION_SCHEMA: &str = "resolvent-operator-factorization/1";
+pub const QFUNCTION_SCHEMA: &str = "scientia-qfunction/1";
+pub const TENSOR_PROGRAM_SCHEMA: &str = "scientia-tensor-program/1";
+pub const OPERATOR_FACTORIZATION_SCHEMA: &str = "scientia-operator-factorization/1";
 
 macro_rules! tensor_id {
     ($name:ident) => {

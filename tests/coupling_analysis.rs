@@ -1,5 +1,5 @@
-use resolvent::scientific::CouplingReason;
-use resolvent::{
+use scientia::scientific::CouplingReason;
+use scientia::{
     IncidenceSystem, derive_coupling_graph, maximum_matching, parse_scientific_module,
     semantic_digest,
 };

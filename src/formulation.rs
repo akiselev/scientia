@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use thiserror::Error;
 
-pub const VARIATIONAL_FORM_SCHEMA: &str = "resolvent-variational-form/4";
+pub const VARIATIONAL_FORM_SCHEMA: &str = "scientia-variational-form/4";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FormArity {
