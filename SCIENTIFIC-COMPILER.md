@@ -56,7 +56,7 @@ Scientia and has no scientific vocabulary.
 
 Finitum binds form requirements and kernels to concrete meshes, spaces, basis data, quadrature,
 constraints, and global operators. Krasis combines those operators with transactional coupled
-state. Solverang consumes physics-neutral residual/operator traits. Sinbad selects cases, runs,
+state. Methodus consumes physics-neutral residual/operator traits. Sinbad selects cases, runs,
 policies, and artifacts.
 
 ## Source and canonical semantic model

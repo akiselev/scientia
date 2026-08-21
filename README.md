@@ -18,7 +18,7 @@ Resolvent CAS --^     |
 - Scientia lowers local numerical work directly into Malleus-owned structured kernel types.
 - Finitum owns meshes, basis tabulations, degrees of freedom, constraints, quadrature execution,
   assembly, and matrix-free global operators.
-- Krasis owns coupled runtime state. Solverang owns numerical algorithms. Sinbad owns the product.
+- Krasis owns coupled runtime state. Methodus owns numerical algorithms. Sinbad owns the product.
 
 There is no alternate expression language, discrete runtime, or reference FEM backend in this
 repository. Git history is the archive for the removed implementation.

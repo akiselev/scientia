@@ -14,8 +14,10 @@ local mathematical artifacts, and lowers local work into Malleus-owned structure
 
 Quantitas owns dimensions, quantity kinds, units, and registries. Resolvent owns consumer-neutral
 exact algebra and symbolic differentiation. Malleus owns local kernel IR and execution. Finitum
-owns concrete discretization/global operators. Krasis owns coupled runtime state. Solverang owns
+owns concrete discretization/global operators. Krasis owns coupled runtime state. Methodus owns
 numerical algorithms. Sinbad owns product orchestration.
+Solverang separately owns generalized constraint solving over Methodus; it is
+not part of Scientia's compiler or simulation execution dependency graph.
 
 ## Implemented
 
