@@ -8,6 +8,7 @@
 
 mod algebra;
 
+pub mod derivative;
 pub mod evidence;
 pub mod form_interpreter;
 pub mod formulation;
@@ -24,6 +25,14 @@ pub mod structured;
 pub mod system;
 pub mod tensor;
 pub mod tensor_interpreter;
+pub mod verification;
+
+pub use derivative::{
+    ActiveSet, Control, DERIVATIVE_REQUEST_SCHEMA, DerivativeConvention, DerivativeDependence,
+    DerivativeLevel, DerivativeProductSpec, DerivativeRefusal, DerivativeRequest,
+    DerivativeStateConvention, DesignVariable, DifferentiabilityDisposition, Objective,
+    ObjectiveSense, ObservableFunctional, ScalarConvention, ShapeDerivativeConvention,
+};
 
 pub use evidence::{
     EmpiricalGrade, EvidenceArtifact, EvidenceAxis, EvidenceGrade, EvidenceItem, EvidenceProfile,
@@ -111,4 +120,12 @@ pub use tensor::{
 pub use tensor_interpreter::{
     DenseTensor, ElementExecutionContext, OperatorAction, TensorInterpretError,
     interpret_element_operator, interpret_qfunction,
+};
+pub use verification::{
+    ConvergenceExpectation, DerivativeCheckSpec, FormalizableObligationRef, InvariantSpec,
+    LimitingCaseSpec, ManufacturedSolutionSpec, ObservableDefinition, ToleranceClass,
+    UnsupportedGeneration, VERIFICATION_OBLIGATION_SCHEMA, VERIFICATION_PROFILE_SCHEMA,
+    ValidityCondition, VerificationEvidenceClass, VerificationObligation,
+    VerificationObligationKind, VerificationProfile, VerificationProfileError,
+    derive_verification_profiles,
 };

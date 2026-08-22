@@ -4,7 +4,7 @@ Updated: 2026-08-21
 
 Branch: `master`
 
-Milestone: R1 standalone scientific compiler extraction
+Milestone: SV0-A1 verification contract and minimum SV1-A/G0C derivative vocabulary
 
 ## Role
 
@@ -28,6 +28,21 @@ not part of Scientia's compiler or simulation execution dependency graph.
   domain frames; typed declaration payloads; and presentation-invariant semantic digest. The
   typed-declaration wire shape is `scientia-semantic/3`; variational forms are
   `scientia-variational-form/4` and record the physical source of generated test spaces.
+- `scientia-verification-profile/1` deterministically derives typed dimension, invariant,
+  manufactured-solution, convergence, limiting-case, and applicable derivative obligations from
+  one compiled semantic model. Obligation identity excludes presentation spans and remains stable
+  across declaration ordering; every obligation retains its source span and explicit tolerance
+  class, evidence class, applicability, expected relation, and unsupported-generation reason.
+- `scientia-derivative-request/1` types objectives, observables, controls, design variables,
+  active/frozen sets, derivative products, partial/total and continuous/discrete conventions,
+  evaluation state, and real/complex meaning. The fixed-topology shape slice requires geometry
+  revision, topology stratum, stable boundary selection, normal/measure variation choices, and a
+  smooth/piecewise/event/unsupported disposition. Design/control namespaces are unique;
+  active/frozen sets exactly partition every declared input, and shape requests require an active
+  design variable rather than merely an active control. Directional checks declare symmetric step
+  sequencing and second-order truncation before roundoff rather than claiming roundoff-only
+  tolerance. Missing, blank, whitespace-only, or inconsistent disposition and boundary meaning is
+  refused.
 - Stable structured diagnostics with exact spans for malformed syntax, imports, domains, names,
   units, quantity kinds, roles, shapes, axes, dimensions, and frames.
 - `compile_semantics` is the complete FC1 library boundary. CLI `check`, `inspect`, `freeze`, and
@@ -149,7 +164,7 @@ Verified locally on 2026-08-21:
 - `cargo fmt --all -- --check` -- passed.
 - `cargo check --locked --workspace --all-targets` -- passed.
 - `cargo clippy --locked --workspace --all-targets -- -D warnings` -- passed.
-- `cargo test --locked --workspace --all-targets` -- passed: 84 tests, 0 failed.
+- `cargo test --locked --workspace --all-targets` -- passed: 87 tests, 0 failed.
 - `RUSTDOCFLAGS='-D warnings' cargo doc --locked --workspace --no-deps` -- passed.
 - `cargo test --locked --workspace --doc` -- passed.
 - `git diff --check` -- passed.
@@ -189,8 +204,15 @@ Verified locally on 2026-08-21:
 - `cargo run --quiet --bin scientia -- check examples/nonlinear_heat.res` -- passed.
 - `cargo run --quiet --bin scientia -- structural examples/nonlinear_heat.res` -- passed with
   one explicit structural block.
+- The SV0 gate derives the same Poisson obligation/profile identities after declaration
+  reordering. The minimum SV1 shape-request gate accepts a revisioned fixed-topology annulus
+  request and refuses missing geometry revision, unbound/colliding derivative inputs, incomplete
+  objectives, and topology-event requests without a basis.
 
 ## Cross-repository contract
+
+- Resolvent path: `../resolvent`, tested against the completed RV0 commit
+  `f686190bda1ba66882a3b06a2f1dc3076cdfe988`.
 
 - Quantitas path: `../quantitas`, validated at
   `734d78cd6ff516afee54201bc70cd59fd34e67e3`; API types used directly include `Dimension`,
@@ -211,5 +233,8 @@ Verified locally on 2026-08-21:
 
 ## Next compiler work
 
-1. Keep optimized topology traversal realization-owned and preserve local-kernel semantics.
-2. Evolve serialized schemas only with explicit versioning and receipt-chain validation.
+1. Supply reusable numerical checkers for the emitted obligations through the owning Methodus,
+   Malleus, Finitum, and Krasis APIs; Scientia remains execution-free.
+2. Extend objective/derivative lowering only when the next SV1 consumer supplies an acceptance
+   case; keep geometry implementation and support promotion downstream.
+3. Evolve serialized schemas only with explicit versioning and receipt-chain validation.

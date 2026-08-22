@@ -33,6 +33,11 @@ Scientia currently provides:
   axes, Quantitas dimensions and quantity kinds, domain frames, and scientific roles;
 - stable structured diagnostics for malformed syntax, units, kinds, roles, names, axes, and frames;
 - property, constitutive, coupling, time/state, and evidence semantics;
+- deterministic, schema-versioned verification profiles and obligations for semantic typing,
+  authored invariants, manufactured solutions, convergence, limiting cases, and applicable
+  derivative checks; unsupported annotations remain explicit refusals;
+- typed objective, observable, control, design-variable, active/frozen input, derivative
+  convention, and fixed-topology shape-disposition artifacts with canonical identity;
 - structural incidence, matching, SCC/BLT, tearing, alias, and DAE planning over the same model,
   including field dependencies hidden behind model-defined values, properties, and constitutive
   laws;
