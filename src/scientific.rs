@@ -265,6 +265,10 @@ pub struct VerificationAnnotation {
 pub enum Expr {
     Number {
         value: f64,
+        /// The literal's exact source spelling (never a `-` sign, which parses as `Unary::Neg`);
+        /// this is what `semantic::ExactLiteral` is computed from, so `0.1` and `0.10` differ in
+        /// digest identity only if this spelling differs (GX-A2, contract C8).
+        lexeme: String,
         unit: Option<String>,
         span: SourceSpan,
     },
@@ -338,6 +342,7 @@ impl Expr {
     pub fn synthetic_number(value: f64) -> Self {
         Self::Number {
             value,
+            lexeme: format!("{value}"),
             unit: None,
             span: SourceSpan::default(),
         }
@@ -434,7 +439,7 @@ impl ScientificError {
 #[derive(Clone, Debug, PartialEq)]
 enum TokenKind {
     Ident(String),
-    Number(f64),
+    Number(f64, String),
     String(String),
     Punct(char),
     Op(String),
@@ -503,7 +508,7 @@ fn lex(input: &str) -> Result<Vec<Token>, Vec<ScientificError>> {
             }
             match input[start..i].parse::<f64>() {
                 Ok(v) => out.push(Token {
-                    kind: TokenKind::Number(v),
+                    kind: TokenKind::Number(v, input[start..i].to_string()),
                     span: SourceSpan::new(start, i),
                 }),
                 Err(_) => errors.push(ScientificError::Syntax {
@@ -884,7 +889,7 @@ impl Parser {
         if self.eat_ident("order") {
             self.eat_op("=");
             order = self.number_u8(1);
-        } else if matches!(self.token().kind, TokenKind::Number(_)) {
+        } else if matches!(self.token().kind, TokenKind::Number(_, _)) {
             order = self.number_u8(1);
         }
         self.expect_punct(')');
@@ -1006,7 +1011,7 @@ impl Parser {
 
     fn number_u8(&mut self, default: u8) -> u8 {
         let t = self.bump();
-        if let TokenKind::Number(v) = t.kind
+        if let TokenKind::Number(v, _) = t.kind
             && v.fract() == 0.0
             && (0.0..=f64::from(u8::MAX)).contains(&v)
         {
@@ -1021,7 +1026,7 @@ impl Parser {
     }
     fn quantity_literal(&mut self, kind: Option<QuantityKindId>) -> Option<QuantityLiteral> {
         let t = self.bump();
-        let value = if let TokenKind::Number(v) = t.kind {
+        let value = if let TokenKind::Number(v, _) = t.kind {
             v
         } else {
             self.error("expected quantity value".into());
@@ -1461,7 +1466,7 @@ impl Parser {
     fn expr(&mut self, min_bp: u8) -> Option<Expr> {
         let mut lhs = match self.bump() {
             Token {
-                kind: TokenKind::Number(value),
+                kind: TokenKind::Number(value, lexeme),
                 span: number_span,
             } => {
                 let (unit, end) = if matches!(self.token().kind, TokenKind::Ident(_)) {
@@ -1475,6 +1480,7 @@ impl Parser {
                 };
                 Expr::Number {
                     value,
+                    lexeme,
                     unit,
                     span: SourceSpan::new(number_span.start, end),
                 }
@@ -1628,6 +1634,34 @@ pub fn parse_scientific_module(input: &str) -> Result<ScientificModule, Vec<Scie
     } else {
         Err(parser.errors)
     }
+}
+
+/// Parse one standalone expression using the same grammar as any expression position in a
+/// model (GX-A2, contracts C7/C3.2), with no surrounding module, domains, or declarations. A
+/// case-file `expression`/`piecewise` binding's `expr` text is parsed with this so it can be
+/// turned into a [`PropertyModel`] and then, via [`crate::projection::lift_standalone_expr`] and
+/// [`crate::property_kernel::lower_property_kernel`], into a Malleus kernel with symbolic
+/// tangents.
+pub fn parse_expression(text: &str) -> Result<Expr, ScientificError> {
+    let tokens = lex(text).map_err(|mut errors| errors.remove(0))?;
+    let mut parser = Parser::new(tokens);
+    let expr = parser.expr(0).ok_or_else(|| {
+        parser
+            .errors
+            .first()
+            .cloned()
+            .unwrap_or(ScientificError::Syntax {
+                message: "expected an expression".into(),
+                span: SourceSpan::default(),
+            })
+    })?;
+    if !matches!(parser.token().kind, TokenKind::Eof) {
+        parser.error("expected end of expression".into());
+    }
+    if let Some(error) = parser.errors.into_iter().next() {
+        return Err(error);
+    }
+    Ok(expr)
 }
 
 /// Parse `.res` source with stable structured diagnostics for CI, editors, and agents.
@@ -2317,31 +2351,6 @@ impl PropertyDefinition {
         }
         evaluate_property_model(&self.model, inputs)
     }
-    pub fn derivative(
-        &self,
-        input: &str,
-        inputs: &BTreeMap<String, f64>,
-    ) -> Result<Option<f64>, ScientificError> {
-        match &self.model {
-            PropertyModel::Constant(_) => Ok(Some(0.0)),
-            PropertyModel::Expression(expr) => {
-                Ok(Some(eval_expr(&differentiate_expr(expr, input)?, inputs)?))
-            }
-            PropertyModel::Piecewise(branches) => {
-                for b in branches {
-                    if b.when.as_ref().is_none_or(|p| predicate(p, inputs)) {
-                        return Ok(Some(eval_expr(
-                            &differentiate_expr(&b.value, input)?,
-                            inputs,
-                        )?));
-                    }
-                }
-                Ok(None)
-            }
-            PropertyModel::Table(table) => table_derivative(table, input, inputs).map(Some),
-            PropertyModel::External(_) => Ok(None),
-        }
-    }
 }
 fn check_bound(b: &InputBounds, inputs: &BTreeMap<String, f64>) -> Result<(), String> {
     let v = *inputs
@@ -2438,10 +2447,6 @@ pub fn eval_expr(expr: &Expr, env: &BTreeMap<String, f64>) -> Result<f64, Scient
     })
 }
 
-pub fn differentiate_expr(expr: &Expr, var: &str) -> Result<Expr, ScientificError> {
-    crate::algebra::differentiate_expr(expr, var)
-}
-
 fn table_evaluate(
     t: &PropertyTable,
     inputs: &BTreeMap<String, f64>,
@@ -2460,33 +2465,6 @@ fn table_evaluate(
         _ => Err(ScientificError::Property(
             "tables currently support one or two axes".into(),
         )),
-    }
-}
-fn table_derivative(
-    t: &PropertyTable,
-    input: &str,
-    inputs: &BTreeMap<String, f64>,
-) -> Result<f64, ScientificError> {
-    if matches!(t.derivative_policy, TableDerivativePolicy::Unavailable) {
-        return Err(ScientificError::Property(
-            "table derivatives unavailable".into(),
-        ));
-    }
-    if t.axes.len() == 1 && t.axes[0].name == input {
-        let x = *inputs
-            .get(input)
-            .ok_or_else(|| ScientificError::UnknownName(input.into()))?;
-        Ok(linear_axis(&t.axes[0], &t.values, x, &t.out_of_range)?.1)
-    } else {
-        let x = *inputs
-            .get(input)
-            .ok_or_else(|| ScientificError::UnknownName(input.into()))?;
-        let h = (x.abs().max(1.0)) * 1e-6;
-        let mut p = inputs.clone();
-        let mut m = inputs.clone();
-        p.insert(input.into(), x + h);
-        m.insert(input.into(), x - h);
-        Ok((table_evaluate(t, &p)? - table_evaluate(t, &m)?) / (2.0 * h))
     }
 }
 fn linear_axis(
@@ -3103,61 +3081,11 @@ model NonlinearHeat {
         );
     }
 
-    #[test]
-    fn property_expression_symbolic_derivative_matches_finite_difference() {
-        let span = SourceSpan::default();
-        let expr = Expr::Binary {
-            op: BinaryOp::Add,
-            lhs: Box::new(Expr::Number {
-                value: 10.0,
-                unit: None,
-                span,
-            }),
-            rhs: Box::new(Expr::Binary {
-                op: BinaryOp::Mul,
-                lhs: Box::new(Expr::Number {
-                    value: 0.5,
-                    unit: None,
-                    span,
-                }),
-                rhs: Box::new(Expr::Name {
-                    name: "T".into(),
-                    span,
-                }),
-                span,
-            }),
-            span,
-        };
-        let mut env = BTreeMap::new();
-        env.insert("T".into(), 300.0);
-        let d = eval_expr(&differentiate_expr(&expr, "T").unwrap(), &env).unwrap();
-        assert!((d - 0.5).abs() < 1e-12);
-    }
-
-    #[test]
-    fn comparison_operators_are_refused_not_zeroed_by_exact_algebra() {
-        let span = SourceSpan::default();
-        let expr = Expr::Binary {
-            op: BinaryOp::Lt,
-            lhs: Box::new(Expr::Name {
-                name: "T".into(),
-                span,
-            }),
-            rhs: Box::new(Expr::Number {
-                value: 300.0,
-                unit: None,
-                span,
-            }),
-            span,
-        };
-        let err = differentiate_expr(&expr, "T").unwrap_err();
-        match err {
-            ScientificError::Property(message) => {
-                assert!(message.contains("outside consumer-neutral exact algebra"));
-            }
-            other => panic!("expected ScientificError::Property, got {other:?}"),
-        }
-    }
+    // Symbolic differentiation of a property expression, and refusing (not zeroing) a
+    // comparison operator, now project through `crate::projection` (contract C8) instead of
+    // the old `algebra.rs` bridge on the parser-owned `Expr`; see
+    // `projection::tests::differentiate_matches_finite_difference` and
+    // `projection::tests::comparisons_are_refused_not_zeroed`.
 
     #[test]
     fn authored_symbols_resolve_through_quantitas() {

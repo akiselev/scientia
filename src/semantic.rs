@@ -99,11 +99,9 @@ impl SymbolId {
     }
 }
 
-// GX-A1 (C1.2) lands provider signatures/calls only in this bump; GX-A2/A3's exact-literal
-// change (contract C8) is out of scope here and, per the frozen contract text, would otherwise
-// share this same "/4" bump number. It has not landed, so the schema numbering below covers only
-// the C1 provider-typing change; a later PR implementing C8 must choose its own next version.
-pub const SEMANTIC_SCHEMA: &str = "scientia-semantic/4";
+// GX-A1 (C1.2) landed provider signatures/calls as "/4". GX-A2's exact-literal change
+// (contract C8) adds `ExactLiteral` to `SemanticExprKind::Number` and bumps to "/5".
+pub const SEMANTIC_SCHEMA: &str = "scientia-semantic/5";
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SemanticModule {
@@ -272,7 +270,7 @@ pub struct SemanticType {
 }
 
 impl SemanticType {
-    fn numeric(
+    pub(crate) fn numeric(
         shape: ValueShape,
         dimension: Option<Dimension>,
         frame: Frame,
@@ -319,12 +317,123 @@ pub struct SemanticExpr {
     pub span: SourceSpan,
 }
 
+/// The exact rational identity of a numeric literal (GX-A2, contract C8), computed from its
+/// source lexeme rather than from the rounded `f64` carried alongside it. This is Scientia's
+/// own type -- consumed directly by the Resolvent projection (`TermStore::exact_integer` /
+/// `exact_decimal`) but never itself a Resolvent type.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ExactLiteral {
+    Integer(i128),
+    /// `mantissa * 10^exponent`.
+    Decimal {
+        mantissa: i128,
+        exponent: i16,
+    },
+}
+
+/// `i128` has no native JSON representation (`serde_json::Value` supports only `i64`/`u64`/
+/// `f64`), and `span_independent_digest` goes through `serde_json::to_value`, so `ExactLiteral`
+/// serializes its `i128` fields as decimal strings rather than deriving `Serialize`/
+/// `Deserialize` directly.
+#[derive(Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum ExactLiteralWire {
+    Integer { value: String },
+    Decimal { mantissa: String, exponent: i16 },
+}
+
+impl Serialize for ExactLiteral {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let wire = match self {
+            ExactLiteral::Integer(value) => ExactLiteralWire::Integer {
+                value: value.to_string(),
+            },
+            ExactLiteral::Decimal { mantissa, exponent } => ExactLiteralWire::Decimal {
+                mantissa: mantissa.to_string(),
+                exponent: *exponent,
+            },
+        };
+        wire.serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for ExactLiteral {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        Ok(match ExactLiteralWire::deserialize(deserializer)? {
+            ExactLiteralWire::Integer { value } => {
+                ExactLiteral::Integer(value.parse().map_err(serde::de::Error::custom)?)
+            }
+            ExactLiteralWire::Decimal { mantissa, exponent } => ExactLiteral::Decimal {
+                mantissa: mantissa.parse().map_err(serde::de::Error::custom)?,
+                exponent,
+            },
+        })
+    }
+}
+
+impl ExactLiteral {
+    /// Parse a lexer-produced numeric lexeme (ASCII digits, an optional `.`, and an optional
+    /// `e`/`E` exponent; the lexer never includes a leading sign in a number token) into its
+    /// exact decimal identity. Trailing fractional zeros are normalized away, so `0.10` and
+    /// `0.1` parse to the same [`ExactLiteral`] while a spelling that changes the significant
+    /// digits (or their count) does not.
+    pub fn from_lexeme(lexeme: &str) -> Self {
+        let (mantissa_text, exponent_text) = match lexeme.find(['e', 'E']) {
+            Some(index) => (&lexeme[..index], &lexeme[index + 1..]),
+            None => (lexeme, ""),
+        };
+        let exponent_bias: i64 = if exponent_text.is_empty() {
+            0
+        } else {
+            exponent_text.parse().unwrap_or(0)
+        };
+        let (integer_part, fraction_part) = match mantissa_text.find('.') {
+            Some(index) => (&mantissa_text[..index], &mantissa_text[index + 1..]),
+            None => (mantissa_text, ""),
+        };
+        let mut digits = format!("{integer_part}{fraction_part}");
+        if digits.is_empty() {
+            digits = "0".into();
+        }
+        let mut exponent = exponent_bias - fraction_part.len() as i64;
+        while digits.len() > 1 && digits.ends_with('0') {
+            digits.pop();
+            exponent += 1;
+        }
+        let mantissa: i128 = digits.parse().unwrap_or(0);
+        if let Ok(shift) = u32::try_from(exponent)
+            && shift <= 38
+            && let Some(scale) = 10i128.checked_pow(shift)
+            && let Some(value) = mantissa.checked_mul(scale)
+        {
+            return ExactLiteral::Integer(value);
+        }
+        ExactLiteral::Decimal {
+            mantissa,
+            exponent: exponent.clamp(i16::MIN as i64, i16::MAX as i64) as i16,
+        }
+    }
+
+    /// Best-effort exact literal for a value with no authored source lexeme (a synthesized
+    /// literal such as the `pi`/`π` intrinsic constant). Unlike [`Self::from_lexeme`] this is
+    /// not a spelling identity -- only a real source lexeme carries one.
+    pub fn from_value(value: f64) -> Self {
+        Self::from_lexeme(&format!("{value:.17e}"))
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum SemanticExprKind {
     Number {
         value: f64,
         unit: Option<UnitId>,
+        /// Exact rational identity computed from the literal's source lexeme (GX-A2, contract
+        /// C8), independent of `value`'s `f64` rounding. Included in every arena digest, so a
+        /// model whose literals differ only in lexeme spelling (not exact value, per
+        /// [`ExactLiteral::from_lexeme`]'s trailing-zero normalization) keeps identical digest
+        /// identity.
+        exact: ExactLiteral,
     },
     String {
         value: String,
@@ -1433,7 +1542,12 @@ impl<'a> Elaborator<'a> {
         diagnostics: &mut Vec<SourceDiagnostic>,
     ) -> ExprId {
         let (kind, ty) = match expression {
-            Expr::Number { value, unit, span } => {
+            Expr::Number {
+                value,
+                lexeme,
+                unit,
+                span,
+            } => {
                 let (unit_id, dimension) = if let Some(authored) = unit {
                     match self
                         .registry
@@ -1459,6 +1573,7 @@ impl<'a> Elaborator<'a> {
                     SemanticExprKind::Number {
                         value: *value,
                         unit: unit_id,
+                        exact: ExactLiteral::from_lexeme(lexeme),
                     },
                     SemanticType::numeric(
                         ValueShape::Scalar,
@@ -1500,6 +1615,7 @@ impl<'a> Elaborator<'a> {
                         SemanticExprKind::Number {
                             value: std::f64::consts::PI,
                             unit: None,
+                            exact: ExactLiteral::from_value(std::f64::consts::PI),
                         },
                         SemanticType::numeric(
                             ValueShape::Scalar,
@@ -2237,9 +2353,9 @@ impl<'a> Elaborator<'a> {
 
     fn integer_literal(&self, id: ExprId) -> Option<i32> {
         match self.expressions[id.index()].kind {
-            SemanticExprKind::Number { value, unit: None }
-                if value.fract() == 0.0 && value >= i32::MIN as f64 && value <= i32::MAX as f64 =>
-            {
+            SemanticExprKind::Number {
+                value, unit: None, ..
+            } if value.fract() == 0.0 && value >= i32::MIN as f64 && value <= i32::MAX as f64 => {
                 Some(value as i32)
             }
             _ => None,
@@ -2336,7 +2452,8 @@ impl<'a> Elaborator<'a> {
             self.expressions[expression.index()].kind,
             SemanticExprKind::Number {
                 value: 0.0,
-                unit: None
+                unit: None,
+                ..
             }
         )
     }

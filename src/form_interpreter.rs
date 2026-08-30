@@ -284,7 +284,9 @@ impl Interpreter<'_> {
     fn expression(&self, id: ExprId) -> Result<FormValue, FormInterpretError> {
         let expression = self.node(id)?;
         Ok(match &expression.kind {
-            SemanticExprKind::Number { value, unit: None } => FormValue::real(*value),
+            SemanticExprKind::Number {
+                value, unit: None, ..
+            } => FormValue::real(*value),
             SemanticExprKind::Number { unit: Some(_), .. } => {
                 return Err(FormInterpretError::UnitBearingLiteral);
             }

@@ -1693,7 +1693,7 @@ fn normalize_expression(
 ) -> Result<NormalizedExpression, RequirementInferenceError> {
     let normalize = |id| normalize_expression(expressions, id, bindings);
     Ok(match &expression(expressions, id)?.kind {
-        SemanticExprKind::Number { value, unit } => NormalizedExpression::Number {
+        SemanticExprKind::Number { value, unit, .. } => NormalizedExpression::Number {
             bits: value.to_bits(),
             unit: unit.as_ref().map(ToString::to_string),
         },

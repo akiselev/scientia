@@ -6,8 +6,6 @@
 
 #![forbid(unsafe_code)]
 
-mod algebra;
-
 pub mod binding_slots;
 pub mod derivative;
 pub mod evidence;
@@ -16,6 +14,8 @@ pub mod formulation;
 pub mod id;
 pub mod kernel;
 pub mod method;
+pub mod projection;
+pub mod property_kernel;
 pub mod property_tensor;
 pub mod requirements;
 pub mod scientific;
@@ -68,6 +68,14 @@ pub use method::{
     compile_boundary_integral_method, compile_conservation_law_method,
     compile_finite_difference_method, compile_network_dae_method, compile_particle_method,
 };
+pub use projection::{
+    AlgebraOperation, AlgebraOutcome, AlgebraRefusal, LiftedSymbol, lift_standalone_expr,
+    lift_standalone_exprs, project,
+};
+pub use property_kernel::{
+    PROPERTY_KERNEL_SCHEMA, PropertyKernel, PropertyKernelError, PropertyTangent,
+    lower_property_kernel,
+};
 pub use property_tensor::SymmetricTensor2;
 pub use requirements::{
     BasisEvaluationRequirement, BoundaryPartitionRequirement, DerivativeEvaluation,
@@ -80,15 +88,17 @@ pub use requirements::{
     SpaceSystemRequirement, TraceMapping, TraceRequirement, infer_form_requirements,
 };
 pub use scientific::{
-    CouplingGraph, DerivativeContract, PropertyDefinition, PropertyDomain, PropertyLocality,
-    ProviderDecl, ProviderDomainBound, ProviderInputDecl, ScientificError, ScientificModel,
-    ScientificModule, TimeStateSemantics, canonicalize_authored_quantity, derive_coupling_graph,
-    format_scientific_module, parse_scientific_module, parse_scientific_module_diagnostics,
-    resolve_modules, semantic_digest, validate_quantities,
+    CouplingGraph, DerivativeContract, Expr, PropertyBranch, PropertyDefinition, PropertyDomain,
+    PropertyEvidence, PropertyInput, PropertyLocality, PropertyModel, PropertyOutput,
+    PropertyProviderRef, PropertySignature, PropertyTable, ProviderDecl, ProviderDomainBound,
+    ProviderInputDecl, ScientificError, ScientificModel, ScientificModule, TableDerivativePolicy,
+    TimeStateSemantics, canonicalize_authored_quantity, derive_coupling_graph,
+    format_scientific_module, parse_expression, parse_scientific_module,
+    parse_scientific_module_diagnostics, resolve_modules, semantic_digest, validate_quantities,
 };
 pub use semantic::{
-    Axis, AxisContraction, DeclarationId, DifferentialOperator, DomainId, ExprId, Frame,
-    ProviderId, RegionId, RegionKind, SemanticCompilation, SemanticDeclaration,
+    Axis, AxisContraction, DeclarationId, DifferentialOperator, DomainId, ExactLiteral, ExprId,
+    Frame, ProviderId, RegionId, RegionKind, SemanticCompilation, SemanticDeclaration,
     SemanticDeclarationKind, SemanticDomain, SemanticExpr, SemanticExprKind, SemanticIntegral,
     SemanticMeasure, SemanticModel, SemanticModule, SemanticProvider, SemanticProviderInput,
     SemanticProviderOutput, SemanticRegion, SemanticRole, SemanticShape, SemanticSymbol,

@@ -13,8 +13,10 @@ use crate::requirements::{
     EvaluationSite, FormRequirements, GeometryPreprocessingRequirement, InputSourceRequirement,
     QuadratureIntent, TraceMapping,
 };
-use crate::scientific::{BinaryOp, FieldRole, UnaryOp, ValueShape};
-use crate::semantic::{ExprId, SemanticExprKind, SemanticMeasure, SymbolId, TraceSide};
+use crate::scientific::{BinaryOp, DerivativeContract, FieldRole, UnaryOp, ValueShape};
+use crate::semantic::{
+    ExprId, SemanticExpr, SemanticExprKind, SemanticMeasure, SemanticProvider, SymbolId, TraceSide,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use thiserror::Error;
@@ -84,7 +86,17 @@ pub enum TensorInputRole {
     Active,
     Passive,
     External,
-    Direction { primal: TensorInputId },
+    Direction {
+        primal: TensorInputId,
+    },
+    /// GX-A3: an externally-supplied tangent value (`d[property]/d[wrt]`, evaluated by the
+    /// property's own Malleus tangent kernel) that a JVP multiplies against `wrt`'s own
+    /// directional input to produce the chain-rule term `d(F)/d[property] * d[property]/d[wrt] *
+    /// delta[wrt]`. JVP-only: never appears in a primal `TensorProgram`.
+    PropertyTangent {
+        property: TensorInputId,
+        wrt: TensorInputId,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -289,6 +301,12 @@ pub struct DerivativeReceipt {
     pub primal_artifact_digest: Digest,
     pub active_inputs: Vec<TensorBinding>,
     pub frozen_inputs: Vec<TensorBinding>,
+    /// GX-A3: symbols of every `ModelDefinedProperty` input whose chain-rule tangent (contract
+    /// C7's per-input tangent kernel) was wired into this JVP via a `PropertyTangent` input,
+    /// rather than left as a purely frozen coefficient. `frozen_inputs` still lists these
+    /// properties truthfully -- their own *value* is still externally supplied -- this field is
+    /// what distinguishes "frozen but chain-rule-corrected" from "genuinely ignored".
+    pub inlined_properties: Vec<SymbolId>,
     pub evaluation_point: DerivativeEvaluationPoint,
     pub mode: DerivativeMode,
     pub complex_convention: FormComplexConvention,
@@ -631,6 +649,9 @@ fn compile_primal_qfunction(
                     TensorInputRole::Passive => TensorProgramInputRole::Passive,
                     TensorInputRole::External => TensorProgramInputRole::External,
                     TensorInputRole::Direction { .. } => unreachable!("no directions in primal"),
+                    TensorInputRole::PropertyTangent { .. } => {
+                        unreachable!("no property tangents in primal")
+                    }
                 }
             },
             source: input.input.source,
@@ -758,12 +779,96 @@ fn compile_jvp_qfunction(
         direction.role = TensorInputRole::Direction { primal: input.id };
         inputs.push(direction);
     }
+
+    // GX-A3: a `ModelDefinedProperty` input whose definition wraps only `Symbolic`/`Automatic`
+    // provider calls is not expanded into the integrand (a provider has no closed form Scientia
+    // can lower symbolically); instead each Active, Basis-`Value` input its definition depends
+    // on gets a companion `PropertyTangent` input -- the property's own runtime-evaluated
+    // tangent (contract C7's per-input tangent kernel) -- and the chain-rule term
+    // `d(F)/d[property] * d[property]/d[wrt] * delta[wrt]` is added to every output alongside
+    // the ordinary directional derivative. A property with no provider calls at all (pure
+    // basis-field/parameter arithmetic) is not inlined by this package; it stays a frozen
+    // (Picard) coefficient exactly as before GX-A3.
+    let mut property_corrections: Vec<(&QFunctionInput, Vec<(TensorInputId, TensorInputId)>)> =
+        Vec::new();
+    let mut inlined_properties: Vec<SymbolId> = Vec::new();
+    for input in &primal.inputs {
+        let InputSourceRequirement::ModelDefinedProperty { definition } = input.source else {
+            continue;
+        };
+        if input.role == TensorInputRole::Active || !input.shape.is_empty() {
+            continue;
+        }
+        if !property_providers_all_differentiable(form, definition) {
+            continue;
+        }
+        let mut direct_symbols = BTreeSet::new();
+        collect_direct_symbols(&form.expressions, definition, &mut direct_symbols)?;
+        let mut wrt_pairs = Vec::new();
+        for candidate in primal.inputs.iter().filter(|candidate| {
+            candidate.role == TensorInputRole::Active
+                && candidate.binding.evaluation.derivative == DerivativeEvaluation::Value
+                && direct_symbols.contains(&candidate.binding.symbol)
+        }) {
+            let tangent_id = TensorInputId(inputs.len() as u32);
+            inputs.push(QFunctionInput {
+                id: tangent_id,
+                binding: input.binding.clone(),
+                side: input.side,
+                shape: input.shape.clone(),
+                role: TensorInputRole::PropertyTangent {
+                    property: input.id,
+                    wrt: candidate.id,
+                },
+                source: input.source,
+            });
+            wrt_pairs.push((candidate.id, tangent_id));
+        }
+        if !wrt_pairs.is_empty() {
+            property_corrections.push((input, wrt_pairs));
+            inlined_properties.push(input.binding.symbol);
+        }
+    }
+
     let outputs = primal
         .outputs
         .iter()
         .map(|output| {
             let mut output = output.clone();
-            output.expression = simplify(directional_derivative(&output.expression, &directions)?);
+            let mut expression = directional_derivative(&output.expression, &directions)?;
+            for (property, wrt_pairs) in &property_corrections {
+                let partial = differentiate(&output.expression, property.id, &[])?;
+                if is_zero(&partial) {
+                    continue;
+                }
+                let mut chain = constant(0.0);
+                for (wrt, tangent_id) in wrt_pairs {
+                    let Some(direction_id) = directions.get(wrt) else {
+                        continue;
+                    };
+                    chain = binary(
+                        TensorBinaryOp::Add,
+                        chain,
+                        binary(
+                            TensorBinaryOp::Mul,
+                            TensorScalarExpr::Input {
+                                input: *tangent_id,
+                                indices: vec![],
+                            },
+                            TensorScalarExpr::Input {
+                                input: *direction_id,
+                                indices: vec![],
+                            },
+                        ),
+                    );
+                }
+                expression = binary(
+                    TensorBinaryOp::Add,
+                    expression,
+                    binary(TensorBinaryOp::Mul, partial, chain),
+                );
+            }
+            output.expression = simplify(expression);
             Ok(output)
         })
         .collect::<Result<Vec<_>, TensorCompileError>>()?;
@@ -783,6 +888,7 @@ fn compile_jvp_qfunction(
         primal_artifact_digest: primal.artifact_digest.clone(),
         active_inputs,
         frozen_inputs,
+        inlined_properties,
         evaluation_point: DerivativeEvaluationPoint::RuntimeBindings,
         mode: DerivativeMode::Jvp,
         complex_convention: form.receipt.complex_convention,
@@ -995,6 +1101,52 @@ fn trace_shape(
         )),
         (Some(TraceMapping::Value | TraceMapping::Tangential) | None, _) => Ok(shape),
     }
+}
+
+/// GX-A3: true when every `ProviderCall` reachable from `id` (walking through arithmetic,
+/// function calls, and further provider calls) names a declared provider whose
+/// `differentiability` is `Symbolic` or `Automatic` -- i.e. one whose own tangent kernel
+/// (contract C7) can supply the chain-rule term this package wires into the JVP. An expression
+/// with no provider calls at all (pure basis-field/parameter arithmetic) is vacuously `true`
+/// here, but is handled by `compile_jvp_qfunction`'s own `wrt_pairs`-emptiness check, not by
+/// this predicate, since such a property is not inlined by this package (see the module-level
+/// GX-A3 note in `compile_jvp_qfunction`).
+fn property_providers_all_differentiable(form: &VariationalForm, id: ExprId) -> bool {
+    fn walk(expressions: &[SemanticExpr], id: ExprId, providers: &[SemanticProvider]) -> bool {
+        let Some(expression) = expressions.get(id.index()) else {
+            return false;
+        };
+        match &expression.kind {
+            SemanticExprKind::ProviderCall { provider, args } => {
+                let differentiable = providers
+                    .iter()
+                    .find(|candidate| candidate.id == *provider)
+                    .is_some_and(|candidate| {
+                        matches!(
+                            candidate.differentiability,
+                            DerivativeContract::Symbolic | DerivativeContract::Automatic
+                        )
+                    });
+                differentiable && args.iter().all(|arg| walk(expressions, *arg, providers))
+            }
+            SemanticExprKind::Unary { arg, .. } | SemanticExprKind::Differential { arg, .. } => {
+                walk(expressions, *arg, providers)
+            }
+            SemanticExprKind::Binary { lhs, rhs, .. } => {
+                walk(expressions, *lhs, providers) && walk(expressions, *rhs, providers)
+            }
+            SemanticExprKind::Call { args, .. } | SemanticExprKind::Vector { elements: args } => {
+                args.iter().all(|arg| walk(expressions, *arg, providers))
+            }
+            SemanticExprKind::Symbol { .. }
+            | SemanticExprKind::Number { .. }
+            | SemanticExprKind::String { .. } => true,
+            // Any other construct (contraction, tensor/facet trace, jump, average, index, ...)
+            // is outside what this package expands; refuse inlining rather than guess.
+            _ => false,
+        }
+    }
+    walk(&form.expressions, id, &form.providers)
 }
 
 fn collect_direct_symbols(
@@ -1254,7 +1406,9 @@ impl Lowerer<'_> {
     ) -> Result<TensorScalarExpr, TensorCompileError> {
         let expression = self.expression(id)?.clone();
         match expression.kind {
-            SemanticExprKind::Number { value, unit: None } => Ok(constant(value)),
+            SemanticExprKind::Number {
+                value, unit: None, ..
+            } => Ok(constant(value)),
             SemanticExprKind::Number { unit: Some(_), .. } => Err(TensorCompileError::Unsupported(
                 "unit-bearing literal before numeric canonicalization".into(),
             )),

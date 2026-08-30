@@ -7,15 +7,17 @@ use crate::scientific::{
 use crate::semantic::{
     AxisContraction, DeclarationId, DifferentialOperator, DomainId, ExprId, Frame, RegionId,
     RegionKind, SemanticDeclarationKind, SemanticExpr, SemanticExprKind, SemanticMeasure,
-    SemanticModel, SemanticModule, SemanticRegion, SemanticRole, SemanticShape, SemanticType,
-    SymbolId, TraceSide, semantic_arena_digest,
+    SemanticModel, SemanticModule, SemanticProvider, SemanticRegion, SemanticRole, SemanticShape,
+    SemanticType, SymbolId, TraceSide, semantic_arena_digest,
 };
 use crate::source::SourceSpan;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use thiserror::Error;
 
-pub const VARIATIONAL_FORM_SCHEMA: &str = "scientia-variational-form/4";
+// "/5" (GX-A3) adds `providers`, so FC4 can see provider `differentiability` when deciding
+// which `ModelDefinedProperty` inputs to inline for chain-rule tangents.
+pub const VARIATIONAL_FORM_SCHEMA: &str = "scientia-variational-form/5";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FormArity {
@@ -180,6 +182,10 @@ pub struct VariationalForm {
     pub captures: Vec<FormCapture>,
     pub expressions: Vec<SemanticExpr>,
     pub integrals: Vec<VariationalIntegral>,
+    /// The source model's declared providers (GX-A3): carried through so FC4's tensor factoring
+    /// can see a `ModelDefinedProperty` input's provider `differentiability`/`locality` without
+    /// widening `factor_operator`'s own signature.
+    pub providers: Vec<SemanticProvider>,
     pub receipt: FormReceipt,
 }
 
@@ -377,6 +383,7 @@ pub fn compile_variational_form(
         captures: &captures,
         expressions: &model.expressions,
         integrals: &integrals,
+        providers: &model.providers,
         receipt: &receipt,
     });
     Ok(VariationalForm {
@@ -391,6 +398,7 @@ pub fn compile_variational_form(
         captures,
         expressions: model.expressions.to_vec(),
         integrals,
+        providers: model.providers.clone(),
         receipt,
     })
 }
@@ -768,6 +776,7 @@ pub fn derive_variational_form_for(
         captures: &captures,
         expressions: &arena.expressions,
         integrals: &integrals,
+        providers: &model.providers,
         receipt: &receipt,
     });
     Ok(VariationalForm {
@@ -782,6 +791,7 @@ pub fn derive_variational_form_for(
         captures,
         expressions: arena.expressions,
         integrals,
+        providers: model.providers.clone(),
         receipt,
     })
 }
@@ -1017,7 +1027,8 @@ fn flatten_residual_terms(
         expression.kind,
         SemanticExprKind::Number {
             value: 0.0,
-            unit: None
+            unit: None,
+            ..
         }
     ) {
         return Ok(());
@@ -1552,6 +1563,7 @@ struct FormDigestPayload<'a> {
     captures: &'a [FormCapture],
     expressions: &'a [SemanticExpr],
     integrals: &'a [VariationalIntegral],
+    providers: &'a [SemanticProvider],
     receipt: &'a FormReceipt,
 }
 

@@ -318,7 +318,7 @@ struct KernelDigestPayload<'a> {
     iteration: LocalIterationContract,
 }
 
-fn expression(
+pub(crate) fn expression(
     expressions: &[SemanticExpr],
     id: ExprId,
 ) -> Result<&SemanticExpr, KernelLoweringError> {
@@ -414,7 +414,7 @@ fn capture_role(role: &FormCaptureRole) -> LocalInputRole {
     }
 }
 
-fn lower_expr(
+pub(crate) fn lower_expr(
     expressions: &[SemanticExpr],
     id: ExprId,
     bindings: &BTreeMap<SymbolId, OperandId>,
@@ -426,7 +426,9 @@ fn lower_expr(
         )));
     }
     Ok(match &expression.kind {
-        SemanticExprKind::Number { value, unit: None } => ScalarExpr::Constant(*value),
+        SemanticExprKind::Number {
+            value, unit: None, ..
+        } => ScalarExpr::Constant(*value),
         SemanticExprKind::Number { unit: Some(_), .. } => {
             return Err(KernelLoweringError::UnsupportedExpression(
                 "unit-bearing literal before numeric canonicalization".into(),
@@ -505,7 +507,7 @@ fn lower_expr(
     })
 }
 
-fn lower_call(
+pub(crate) fn lower_call(
     expressions: &[SemanticExpr],
     function: &str,
     args: &[ExprId],
