@@ -1,6 +1,6 @@
 # Scientia status
 
-Updated: 2026-08-21
+Updated: 2026-08-30
 
 Branch: `master`
 
@@ -231,10 +231,58 @@ Verified locally on 2026-08-21:
   points in its landed FC6 reference realization. Any later fixed-axis batching remains
   realization-owned and must preserve point-QFunction semantics; see `ITERATION-OWNERSHIP.md`.
 
+## Known limits recorded by the 2026-08-30 workspace audit (tree `0f8d7d6`)
+
+- Provider calls such as `thermal_conductivity(T)`, `exact_u()`, or
+  `prescribed_flux(t)` are unregistered and untyped: they elaborate to a
+  deferred `Intrinsic` call with no arity, unit, or shape check, and there is
+  no binding-slot manifest a consumer can use by identity. An unknown bare
+  name is an error; an unknown function is silently accepted.
+- The property/provider vocabulary (`PropertySignature`, `PropertyModel`,
+  `PropertyTable`, `ConstitutiveLaw`, …), all of `src/evidence.rs`, and
+  `DerivativeRequest` have no producer from `.res` and no consumer; the
+  Resolvent dependency is reachable only through the dead property path, and
+  `algebra.rs` maps comparison operators to the constant `0` without a
+  diagnostic.
+- Every emitted JVP freezes model-defined properties: the tangent is a
+  frozen-coefficient (Picard) tangent, not the Newton Jacobian, and `dk/dT`
+  is not obtainable from any artifact. The derivative receipt names the
+  frozen inputs truthfully.
+- Verification obligations are six kinds whose requirements are prose
+  strings: no exact-solution `ExprId`, no tolerance values, no ladder, no
+  conservation/patch/rigid-body/temporal-convergence kinds; corpus annotations
+  outside `@mms`/`@limiting_case`/`@validation` are refused. No CLI exposes
+  `derive_verification_profiles`.
+- No symmetry, definiteness, nullspace, or linearity vocabulary exists for
+  solver selection; method-family selection is caller-named.
+- FC3+ artifacts are name-free; generated test-argument `SymbolId`s are
+  `model.symbols.len()` for every form and collide across `OperatorSystem`
+  blocks.
+- Corpus coverage: 50/50 elaborate, 69/128 equations derive a form, 61/128
+  requirements, 35/128 operator factorizations. 49 equations fail
+  `FORM_BOUNDARY_PARTITION_REQUIRED` because a region's domain is set only
+  from a boundary-condition target field; 18 fail on an opaque provider call
+  inside an integrand.
+- Numeric literals are `f64`; unit-bearing literals are never rescaled and are
+  refused at FC4; `si_bootstrap` knows five units and three quantity kinds.
+- Non-Cartesian coordinate systems validate and are then ignored downstream.
+- `src/tensor.rs` contraction rank check has an unguarded `usize`
+  subtraction (panics in debug on `40-induction-machine-dq.res`).
+
 ## Next compiler work
 
-1. Supply reusable numerical checkers for the emitted obligations through the owning Methodus,
-   Malleus, Finitum, and Krasis APIs; Scientia remains execution-free.
-2. Extend objective/derivative lowering only when the next SV1 consumer supplies an acceptance
-   case; keep geometry implementation and support promotion downstream.
-3. Evolve serialized schemas only with explicit versioning and receipt-chain validation.
+GX-A (see `sinbad/docs/simulation-vision/GX-GENERIC-EXECUTION-PLANE.md`):
+
+1. `GX-A1` provider signature declarations, typed provider calls, and the
+   `scientia-binding-slots/1` manifest;
+2. `GX-A6` region/domain resolution from the equation domain and a
+   natural-boundary convention; `GX-A7` fixes (checked subtraction,
+   test-argument namespace, name sidecar, registry coverage, literal
+   canonicalization);
+3. `GX-A4` `OperatorStructure`; `GX-A5` typed obligations and
+   `derive-verification` CLI;
+4. `GX-A2/A3` property-model lowering with symbolic tangents through the
+   Resolvent RV1-C2/C3 projection, and chain-rule tangents in FC4/FC5.
+
+Scientia remains execution-free; evolve serialized schemas only with explicit
+versioning and receipt-chain validation.
