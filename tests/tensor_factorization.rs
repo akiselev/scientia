@@ -439,6 +439,46 @@ fn malformed_derivative_shapes_and_active_sources_are_refused() {
     ));
 }
 
+const SCALAR_TIMES_VECTOR_WITH_OPAQUE_CONSTITUTIVE: &str = r#"
+module gx_a7.contraction_rank;
+model ContractionRank {
+  domain Machine { dimension = 0; coordinates = rotating_dq; }
+  field stator_current: state vector(2) L2(order=0) on Machine { time_role = differential; };
+  field rotor_flux: state vector(2) L2(order=0) on Machine { time_role = differential; };
+  property stator_resistance = winding_resistance(0);
+  property inductance = machine_inductance(0);
+  source stator_voltage: VoltageSource;
+  constitutive stator_flux =
+      machine_stator_flux(stator_current, rotor_flux, inductance);
+  equation stator_voltage_balance on Machine {
+      stator_voltage
+      = stator_resistance * stator_current
+      + dt(stator_flux)
+      + synchronous_rotation(stator_flux);
+  }
+}
+"#;
+
+#[test]
+fn contraction_rank_mismatch_is_a_typed_refusal_not_a_panic() {
+    let compilation = compile_semantics(
+        SCALAR_TIMES_VECTOR_WITH_OPAQUE_CONSTITUTIVE,
+        &UnitRegistry::si_bootstrap(),
+    )
+    .unwrap();
+    let form = derive_variational_form(
+        &compilation.semantic,
+        "ContractionRank",
+        "stator_voltage_balance",
+    )
+    .unwrap();
+    let requirements = infer_form_requirements(&compilation.semantic, &form).unwrap();
+    assert!(matches!(
+        factor_operator(&form, &requirements),
+        Err(TensorCompileError::Shape(_))
+    ));
+}
+
 #[test]
 fn interpreter_refuses_a_malformed_non_basis_active_artifact() {
     let (_, mut factorization) = poisson_factorization();

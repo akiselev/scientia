@@ -7,8 +7,8 @@ use crate::scientific::{
 use crate::semantic::{
     AxisContraction, DeclarationId, DifferentialOperator, DomainId, ExprId, Frame, RegionId,
     RegionKind, SemanticDeclarationKind, SemanticExpr, SemanticExprKind, SemanticMeasure,
-    SemanticModel, SemanticModule, SemanticRole, SemanticShape, SemanticType, SymbolId, TraceSide,
-    semantic_arena_digest,
+    SemanticModel, SemanticModule, SemanticRegion, SemanticRole, SemanticShape, SemanticType,
+    SymbolId, TraceSide, semantic_arena_digest,
 };
 use crate::source::SourceSpan;
 use serde::{Deserialize, Serialize};
@@ -115,6 +115,12 @@ pub enum FormAssumption {
     ExteriorRegionsPartitionBoundary {
         domain: DomainId,
         regions: Vec<RegionId>,
+        /// GX-A6 natural-boundary convention: `true` when the model declared no exterior
+        /// region for `domain` and a whole-boundary region
+        /// (`boundary("<Domain>.boundary")`, see `RegionId::generated_for`) was synthesized
+        /// instead. A `BoundaryPartitionRequirement` is still produced for the synthesized
+        /// region, so a downstream realization must still discharge it.
+        implicit_natural_boundary: bool,
     },
     TestTraceVanishes {
         argument: SymbolId,
@@ -505,7 +511,10 @@ pub fn derive_variational_form_for(
     };
 
     let mut arena = FormArena::new(model.expressions.to_vec());
-    let argument_symbol = SymbolId(model.symbols.len() as u32);
+    // Generated per declaration (not `model.symbols.len()`) so that distinct equations of the
+    // same model never synthesize the same test-argument `SymbolId`; see
+    // `SymbolId::generated_for` and `SymbolId::is_generated`.
+    let argument_symbol = SymbolId::generated_for(equation.id);
     let mut argument_type = field.ty.clone();
     argument_type.role = SemanticRole::PhysicalField(FieldRole::Test);
     let argument_expr = arena.push(
@@ -1063,21 +1072,31 @@ fn derive_boundary_terms(
     let domain = model.symbols[test_field.index()]
         .domain
         .expect("test field domain validated before derivation");
-    let regions = model
+    let mut regions: Vec<SemanticRegion> = model
         .regions
         .iter()
         .filter(|region| region.kind == RegionKind::ExteriorFacet && region.domain == Some(domain))
-        .collect::<Vec<_>>();
-    if regions.is_empty() {
-        return Err(FormCompileError::UnsupportedStrongForm {
-            code: "FORM_BOUNDARY_PARTITION_REQUIRED",
-            equation: equation_name.to_owned(),
-            detail: "integration by parts requires a resolved exterior boundary region".into(),
+        .cloned()
+        .collect();
+    // GX-A6 natural-boundary convention: when the model declares no exterior region for this
+    // domain, synthesize the implicit whole-boundary region `boundary("<Domain>.boundary")`
+    // rather than refusing. Its retained boundary term is a natural (Neumann-zero unless
+    // bound) flux term, exactly like any other region with no matching boundary condition
+    // below; `implicit_natural_boundary` still records that a case must discharge it.
+    let implicit_natural_boundary = regions.is_empty();
+    if implicit_natural_boundary {
+        regions.push(SemanticRegion {
+            id: RegionId::generated_for(domain),
+            name: format!("{}.boundary", model.domains[domain.index()].name),
+            kind: RegionKind::ExteriorFacet,
+            domain: Some(domain),
+            span: SourceSpan::default(),
         });
     }
     let partition_assumption = FormAssumption::ExteriorRegionsPartitionBoundary {
         domain,
         regions: regions.iter().map(|region| region.id).collect(),
+        implicit_natural_boundary,
     };
     if !assumptions.contains(&partition_assumption) {
         assumptions.push(partition_assumption);
@@ -1649,7 +1668,9 @@ fn validate_expression_side(
                 visited,
             )?;
         }
-        SemanticExprKind::Call { args, .. } | SemanticExprKind::Vector { elements: args } => {
+        SemanticExprKind::Call { args, .. }
+        | SemanticExprKind::ProviderCall { args, .. }
+        | SemanticExprKind::Vector { elements: args } => {
             for arg in args {
                 validate_expression_side(
                     form,
@@ -1709,9 +1730,9 @@ fn expression_children(kind: &SemanticExprKind) -> Vec<ExprId> {
         | SemanticExprKind::NormalComponent { value: arg, .. } => vec![*arg],
         SemanticExprKind::Binary { lhs, rhs, .. }
         | SemanticExprKind::Contraction { lhs, rhs, .. } => vec![*lhs, *rhs],
-        SemanticExprKind::Call { args, .. } | SemanticExprKind::Vector { elements: args } => {
-            args.clone()
-        }
+        SemanticExprKind::Call { args, .. }
+        | SemanticExprKind::ProviderCall { args, .. }
+        | SemanticExprKind::Vector { elements: args } => args.clone(),
         SemanticExprKind::Index { value, indices } => {
             let mut children = Vec::with_capacity(indices.len() + 1);
             children.push(*value);
@@ -1782,7 +1803,9 @@ fn collect_symbols(
             collect_symbols(model, *lhs, visited, symbols)?;
             collect_symbols(model, *rhs, visited, symbols)?;
         }
-        SemanticExprKind::Call { args, .. } | SemanticExprKind::Vector { elements: args } => {
+        SemanticExprKind::Call { args, .. }
+        | SemanticExprKind::ProviderCall { args, .. }
+        | SemanticExprKind::Vector { elements: args } => {
             for argument in args {
                 collect_symbols(model, *argument, visited, symbols)?;
             }

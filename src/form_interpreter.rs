@@ -241,6 +241,13 @@ fn collect_required_evaluations(
                 insert(required, id, FormEvaluation::Value);
             }
         }
+        SemanticExprKind::ProviderCall { .. } => {
+            // A typed provider call is opaque to the deterministic form interpreter for the
+            // same reason an untyped `Call` is: it needs a caller-supplied bound value at
+            // this expression id (`InputSourceRequirement::ModelDefinedProperty`), not a
+            // recursive evaluation of its own arguments.
+            insert(required, id, FormEvaluation::Value);
+        }
         SemanticExprKind::Unary { arg, .. }
         | SemanticExprKind::TensorTrace { value: arg, .. }
         | SemanticExprKind::Conjugate { value: arg } => {
@@ -297,6 +304,7 @@ impl Interpreter<'_> {
                 binary(*op, self.expression(*lhs)?, self.expression(*rhs)?)?
             }
             SemanticExprKind::Call { function, args } => self.call(id, function, args)?,
+            SemanticExprKind::ProviderCall { .. } => self.required(id, FormEvaluation::Value)?,
             SemanticExprKind::Differential { operator, arg } => {
                 let evaluation = match operator {
                     DifferentialOperator::Gradient => FormEvaluation::Gradient,

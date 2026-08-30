@@ -382,6 +382,11 @@ fn collect_input_evaluations(
                 collect_input_evaluations(expressions, *argument, nested, inputs)?;
             }
         }
+        SemanticExprKind::ProviderCall { args, .. } => {
+            for argument in args {
+                collect_input_evaluations(expressions, *argument, evaluation, inputs)?;
+            }
+        }
         SemanticExprKind::Index { value, indices } => {
             collect_input_evaluations(expressions, *value, evaluation, inputs)?;
             for index in indices {
@@ -461,6 +466,14 @@ fn lower_expr(
         }
         SemanticExprKind::Call { function, args } => {
             lower_call(expressions, function, args, bindings)?
+        }
+        SemanticExprKind::ProviderCall { .. } => {
+            // A typed provider call is a model-defined value, not a scalar-intrinsic call;
+            // it is unsupported in this narrow scalar path for the same reason an opaque
+            // provider `Call` already is (property/kernel lowering is GX-A2/A3, not landed).
+            return Err(KernelLoweringError::UnsupportedExpression(
+                "provider call before property/kernel lowering".into(),
+            ));
         }
         SemanticExprKind::String { .. } => {
             return Err(KernelLoweringError::UnsupportedExpression(

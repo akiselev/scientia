@@ -1,9 +1,10 @@
 use quantitas::UnitRegistry;
 use scientia::{
     IncidenceSystem, SemanticModel, SemanticModule, SourceDiagnostic, compile_schedule,
-    compile_variational_form, derive_coupling_graph, derive_variational_form, elaborate_module,
-    factor_operator, format_scientific_module, infer_form_requirements,
-    parse_scientific_module_diagnostics, semantic_arena_digest, semantic_digest,
+    compile_semantics, compile_variational_form, derive_binding_slots, derive_coupling_graph,
+    derive_variational_form, elaborate_module, factor_operator, format_scientific_module,
+    infer_form_requirements, parse_scientific_module_diagnostics, semantic_arena_digest,
+    semantic_digest,
 };
 use std::{env, fs, process::ExitCode};
 
@@ -37,8 +38,9 @@ fn run() -> Result<(), String> {
         .map_err(|diagnostics| render_diagnostics(&source, &diagnostics, json))?;
     match command.as_str() {
         "check" => {
-            let semantic = elaborate_module(&module, &UnitRegistry::si_bootstrap())
-                .map_err(|diagnostics| render_diagnostics(&source, &diagnostics, json))?;
+            let (semantic, advisories) =
+                elaborate_module(&module, &UnitRegistry::si_bootstrap())
+                    .map_err(|diagnostics| render_diagnostics(&source, &diagnostics, json))?;
             if json {
                 println!(
                     "{}",
@@ -48,6 +50,7 @@ fn run() -> Result<(), String> {
                         "semantic_digest": semantic_digest(&module),
                         "semantic_arena_digest": semantic_arena_digest(&semantic),
                         "expressions": semantic.models.iter().map(|model| model.expressions.len()).sum::<usize>(),
+                        "advisories": advisories,
                     }))
                     .map_err(|e| e.to_string())?
                 );
@@ -57,6 +60,9 @@ fn run() -> Result<(), String> {
                     module.models.len(),
                     semantic_arena_digest(&semantic)
                 );
+                if !advisories.is_empty() {
+                    println!("{}", render_diagnostics(&source, &advisories, false));
+                }
             }
         }
         "parse" => println!(
@@ -65,7 +71,7 @@ fn run() -> Result<(), String> {
         ),
         "fmt" => print!("{}", format_scientific_module(&module)),
         "freeze" => {
-            let semantic = elaborate_module(&module, &UnitRegistry::si_bootstrap())
+            let (semantic, _advisories) = elaborate_module(&module, &UnitRegistry::si_bootstrap())
                 .map_err(|diagnostics| render_diagnostics(&source, &diagnostics, json))?;
             println!(
                 "{}",
@@ -79,7 +85,7 @@ fn run() -> Result<(), String> {
             );
         }
         "inspect" => {
-            let semantic = elaborate_module(&module, &UnitRegistry::si_bootstrap())
+            let (semantic, _advisories) = elaborate_module(&module, &UnitRegistry::si_bootstrap())
                 .map_err(|diagnostics| render_diagnostics(&source, &diagnostics, json))?;
             let models = module
                 .models
@@ -119,7 +125,7 @@ fn run() -> Result<(), String> {
             );
         }
         "coupling" => {
-            let semantic = elaborate_module(&module, &UnitRegistry::si_bootstrap())
+            let (semantic, _advisories) = elaborate_module(&module, &UnitRegistry::si_bootstrap())
                 .map_err(|diagnostics| render_diagnostics(&source, &diagnostics, json))?;
             let semantic_model = select_model(&semantic, selector)?;
             let model = module
@@ -136,7 +142,7 @@ fn run() -> Result<(), String> {
             );
         }
         "structural" => {
-            let semantic = elaborate_module(&module, &UnitRegistry::si_bootstrap())
+            let (semantic, _advisories) = elaborate_module(&module, &UnitRegistry::si_bootstrap())
                 .map_err(|diagnostics| render_diagnostics(&source, &diagnostics, json))?;
             let semantic_model = select_model(&semantic, selector)?;
             let model = module
@@ -163,7 +169,7 @@ fn run() -> Result<(), String> {
             );
         }
         "explain" => {
-            let semantic = elaborate_module(&module, &UnitRegistry::si_bootstrap())
+            let (semantic, _advisories) = elaborate_module(&module, &UnitRegistry::si_bootstrap())
                 .map_err(|diagnostics| render_diagnostics(&source, &diagnostics, json))?;
             let (semantic_model, edge_selector) = select_explain(&semantic, selector, detail)?;
             let model = module
@@ -193,7 +199,7 @@ fn run() -> Result<(), String> {
             );
         }
         "form" => {
-            let semantic = elaborate_module(&module, &UnitRegistry::si_bootstrap())
+            let (semantic, _advisories) = elaborate_module(&module, &UnitRegistry::si_bootstrap())
                 .map_err(|diagnostics| render_diagnostics(&source, &diagnostics, json))?;
             let (model, form_name) = select_model_item(&semantic, selector, "form")?;
             println!(
@@ -206,7 +212,7 @@ fn run() -> Result<(), String> {
             );
         }
         "derive-form" => {
-            let semantic = elaborate_module(&module, &UnitRegistry::si_bootstrap())
+            let (semantic, _advisories) = elaborate_module(&module, &UnitRegistry::si_bootstrap())
                 .map_err(|diagnostics| render_diagnostics(&source, &diagnostics, json))?;
             let (model, equation_name) = select_model_item(&semantic, selector, "derive-form")?;
             println!(
@@ -219,7 +225,7 @@ fn run() -> Result<(), String> {
             );
         }
         "requirements" => {
-            let semantic = elaborate_module(&module, &UnitRegistry::si_bootstrap())
+            let (semantic, _advisories) = elaborate_module(&module, &UnitRegistry::si_bootstrap())
                 .map_err(|diagnostics| render_diagnostics(&source, &diagnostics, json))?;
             let (model, form_name) = select_model_item(&semantic, selector, "requirements")?;
             let form = compile_variational_form(&semantic, &model.name, form_name)
@@ -233,7 +239,7 @@ fn run() -> Result<(), String> {
             );
         }
         "derive-requirements" => {
-            let semantic = elaborate_module(&module, &UnitRegistry::si_bootstrap())
+            let (semantic, _advisories) = elaborate_module(&module, &UnitRegistry::si_bootstrap())
                 .map_err(|diagnostics| render_diagnostics(&source, &diagnostics, json))?;
             let (model, equation_name) =
                 select_model_item(&semantic, selector, "derive-requirements")?;
@@ -248,7 +254,7 @@ fn run() -> Result<(), String> {
             );
         }
         "operator" => {
-            let semantic = elaborate_module(&module, &UnitRegistry::si_bootstrap())
+            let (semantic, _advisories) = elaborate_module(&module, &UnitRegistry::si_bootstrap())
                 .map_err(|diagnostics| render_diagnostics(&source, &diagnostics, json))?;
             let (model, form_name) = select_model_item(&semantic, selector, "operator")?;
             let form = compile_variational_form(&semantic, &model.name, form_name)
@@ -264,7 +270,7 @@ fn run() -> Result<(), String> {
             );
         }
         "derive-operator" => {
-            let semantic = elaborate_module(&module, &UnitRegistry::si_bootstrap())
+            let (semantic, _advisories) = elaborate_module(&module, &UnitRegistry::si_bootstrap())
                 .map_err(|diagnostics| render_diagnostics(&source, &diagnostics, json))?;
             let (model, equation_name) = select_model_item(&semantic, selector, "derive-operator")?;
             let form = derive_variational_form(&semantic, &model.name, equation_name)
@@ -280,12 +286,30 @@ fn run() -> Result<(), String> {
             );
         }
         "elaborate" => {
-            let semantic = elaborate_module(&module, &UnitRegistry::si_bootstrap())
+            let (semantic, _advisories) = elaborate_module(&module, &UnitRegistry::si_bootstrap())
                 .map_err(|diagnostics| render_diagnostics(&source, &diagnostics, json))?;
             println!(
                 "{}",
                 serde_json::to_string_pretty(&semantic).map_err(|error| error.to_string())?
             );
+        }
+        "slots" => {
+            let compilation = compile_semantics(&source, &UnitRegistry::si_bootstrap())
+                .map_err(|diagnostics| render_diagnostics(&source, &diagnostics, json))?;
+            let manifests = derive_binding_slots(&compilation);
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&manifests).map_err(|error| error.to_string())?
+                );
+            } else {
+                for manifest in &manifests {
+                    println!("model {} ({} slots):", manifest.model, manifest.slots.len());
+                    for slot in &manifest.slots {
+                        println!("  {:<10} {}", format!("{:?}", slot.status), slot.id);
+                    }
+                }
+            }
         }
         _ => return Err(usage()),
     }
@@ -293,7 +317,7 @@ fn run() -> Result<(), String> {
 }
 
 fn usage() -> String {
-    "usage: scientia <check|fmt|parse|elaborate|inspect|freeze|explain|coupling|structural|form|derive-form|requirements|derive-requirements|operator|derive-operator> [--json] <model.res> [model|model:item] [detail]".into()
+    "usage: scientia <check|fmt|parse|elaborate|inspect|freeze|explain|coupling|structural|form|derive-form|requirements|derive-requirements|operator|derive-operator|slots> [--json] <model.res> [model|model:item] [detail]".into()
 }
 
 fn select_model<'a>(

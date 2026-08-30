@@ -910,9 +910,9 @@ fn children(kind: &SemanticExprKind, output: &mut Vec<ExprId>) {
         | SemanticExprKind::NormalComponent { value: arg, .. } => output.push(*arg),
         SemanticExprKind::Binary { lhs, rhs, .. }
         | SemanticExprKind::Contraction { lhs, rhs, .. } => output.extend([*lhs, *rhs]),
-        SemanticExprKind::Call { args, .. } | SemanticExprKind::Vector { elements: args } => {
-            output.extend(args.iter().copied())
-        }
+        SemanticExprKind::Call { args, .. }
+        | SemanticExprKind::ProviderCall { args, .. }
+        | SemanticExprKind::Vector { elements: args } => output.extend(args.iter().copied()),
         SemanticExprKind::Index { value, indices } => {
             output.push(*value);
             output.extend(indices.iter().copied());

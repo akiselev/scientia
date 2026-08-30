@@ -6,11 +6,12 @@
 
 use crate::id::span_independent_digest;
 use crate::scientific::{
-    BinaryOp, BoundaryConditionKind, CoordinateSystem, Expr, FieldDecl, FieldRole, Measure,
-    ScientificModel as SourceModel, ScientificModule, SpaceSpec, UnaryOp, ValueDecl, ValueShape,
-    canonicalize_authored_quantity,
+    BinaryOp, BoundaryConditionKind, CoordinateSystem, DerivativeContract, Expr, FieldDecl,
+    FieldRole, InputBounds, Measure, OutOfValidityPolicy, PropertyDomain, PropertyLocality,
+    ProviderDecl, ScientificModel as SourceModel, ScientificModule, SpaceSpec, UnaryOp, ValueDecl,
+    ValueShape, canonicalize_authored_quantity,
 };
-use crate::source::{RelatedSpan, SourceDiagnostic, SourceSpan};
+use crate::source::{RelatedSpan, SourceDiagnostic, SourceSeverity, SourceSpan};
 use quantitas::{Dimension, QuantityKindId, QuantityLiteral, UnitId, UnitRegistry};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -43,8 +44,66 @@ arena_id!(RegionId);
 arena_id!(SymbolId);
 arena_id!(ExprId);
 arena_id!(DeclarationId);
+arena_id!(ProviderId);
 
-pub const SEMANTIC_SCHEMA: &str = "scientia-semantic/3";
+impl RegionId {
+    /// Reserved bit that marks a compiler-synthesized region id -- today, only the GX-A6
+    /// implicit whole-boundary region `derive_variational_form_for` synthesizes when
+    /// integration by parts needs an exterior boundary and the model declares none for that
+    /// domain. As with [`SymbolId::GENERATED_BASE`], no real model reaches this magnitude.
+    pub const GENERATED_BASE: u32 = 0x8000_0000;
+
+    pub const fn is_generated(self) -> bool {
+        self.0 >= Self::GENERATED_BASE
+    }
+
+    /// Build the deterministic implicit-natural-boundary region id for `domain`: the same
+    /// domain always synthesizes the same region id, so repeated derivations agree.
+    pub const fn generated_for(domain: DomainId) -> Self {
+        Self(Self::GENERATED_BASE + domain.0)
+    }
+
+    /// Decode the domain a generated region id was built for, or `None` for a real
+    /// (arena-indexed) region id.
+    pub const fn generated_domain(self) -> Option<DomainId> {
+        if self.is_generated() {
+            Some(DomainId(self.0 - Self::GENERATED_BASE))
+        } else {
+            None
+        }
+    }
+}
+
+impl SymbolId {
+    /// Reserved bit that marks a compiler-synthesized symbol id (see
+    /// [`SymbolId::is_generated`]). Every id produced by [`SemanticModel`] elaboration is a
+    /// dense arena index starting at zero, so no real model reaches this magnitude; a
+    /// generated id is therefore never confusable with `SemanticModel::symbols[id]`.
+    pub const GENERATED_BASE: u32 = 0x8000_0000;
+
+    /// True when this id was synthesized by the compiler (for example, a derived form's
+    /// generated test argument) rather than allocated for an authored field, property,
+    /// source, or parameter declaration. `SemanticModel::symbols[id]` is invalid for a
+    /// generated id; use the id only through the artifact (such as a derived form's
+    /// generated test argument) that documents its meaning.
+    pub const fn is_generated(self) -> bool {
+        self.0 >= Self::GENERATED_BASE
+    }
+
+    /// Build the generated symbol id for a compiler-synthesized argument keyed on the
+    /// declaration (for example an `equation`) it was derived from. Distinct declarations
+    /// always receive distinct generated ids, even within the same model, so generated
+    /// arguments from different derived forms never collide.
+    pub const fn generated_for(declaration: DeclarationId) -> Self {
+        Self(Self::GENERATED_BASE + declaration.0)
+    }
+}
+
+// GX-A1 (C1.2) lands provider signatures/calls only in this bump; GX-A2/A3's exact-literal
+// change (contract C8) is out of scope here and, per the frozen contract text, would otherwise
+// share this same "/4" bump number. It has not landed, so the schema numbering below covers only
+// the C1 provider-typing change; a later PR implementing C8 must choose its own next version.
+pub const SEMANTIC_SCHEMA: &str = "scientia-semantic/4";
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SemanticModule {
@@ -58,6 +117,10 @@ pub struct SemanticModule {
 pub struct SemanticCompilation {
     pub source: ScientificModule,
     pub semantic: SemanticModule,
+    /// Non-fatal diagnostics from elaboration (today: only `RESOLVE_UNDECLARED_PROVIDER`).
+    /// Excluded from `semantic`'s arena so it never perturbs `semantic_arena_digest`.
+    #[serde(default)]
+    pub advisories: Vec<SourceDiagnostic>,
 }
 
 /// Parse and elaborate source through the complete FC1 boundary.
@@ -66,10 +129,11 @@ pub fn compile_semantics(
     registry: &UnitRegistry,
 ) -> Result<SemanticCompilation, Vec<SourceDiagnostic>> {
     let parsed = crate::scientific::parse_scientific_module_diagnostics(source)?;
-    let semantic = elaborate_module(&parsed, registry)?;
+    let (semantic, advisories) = elaborate_module(&parsed, registry)?;
     Ok(SemanticCompilation {
         source: parsed,
         semantic,
+        advisories,
     })
 }
 
@@ -79,10 +143,46 @@ pub struct SemanticModel {
     pub name: String,
     pub domains: Vec<SemanticDomain>,
     pub regions: Vec<SemanticRegion>,
+    pub providers: Vec<SemanticProvider>,
     pub symbols: Vec<SemanticSymbol>,
     pub expressions: Arc<[SemanticExpr]>,
     pub declarations: Vec<SemanticDeclaration>,
     pub span: SourceSpan,
+}
+
+/// A `provider` signature (GX-A1, contract C1.2): `SemanticExprKind::ProviderCall` nodes
+/// reference one of these by [`ProviderId`] rather than carrying an opaque function name.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SemanticProvider {
+    pub id: ProviderId,
+    pub name: String,
+    pub inputs: Vec<SemanticProviderInput>,
+    pub output: SemanticProviderOutput,
+    pub locality: PropertyLocality,
+    pub differentiability: DerivativeContract,
+    pub domain: PropertyDomain,
+    pub span: SourceSpan,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SemanticProviderInput {
+    pub name: String,
+    /// `None` is the `selector` pseudo-kind (a non-physical integer catalog selector); it
+    /// never enters dimension analysis.
+    pub quantity_kind: Option<QuantityKindId>,
+    pub dimension: Option<Dimension>,
+    pub shape: ValueShape,
+    pub span: SourceSpan,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SemanticProviderOutput {
+    pub quantity_kind: QuantityKindId,
+    /// `None` when the declared quantity kind has no known dimension in this compiler's
+    /// minimal kind table (see `known_kind_dimension`); arity/selector typing still applies.
+    pub dimension: Option<Dimension>,
+    pub shape: ValueShape,
+    pub unit: Option<UnitId>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -131,6 +231,9 @@ pub enum SemanticRole {
     Verification,
     Literal,
     Intrinsic,
+    /// The type role of a `SemanticExprKind::ProviderCall` expression, distinct from
+    /// `Intrinsic` because its type comes from a declared `provider` signature.
+    Provider,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -280,6 +383,12 @@ pub enum SemanticExprKind {
     Vector {
         elements: Vec<ExprId>,
     },
+    /// A call whose function name matches a declared `provider` signature (contract C1.2).
+    /// Calls to undeclared, non-intrinsic functions keep `SemanticExprKind::Call` instead.
+    ProviderCall {
+        provider: ProviderId,
+        args: Vec<ExprId>,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -376,10 +485,15 @@ pub struct SemanticIntegral {
     pub span: SourceSpan,
 }
 
+/// Elaborate every model in `module`. The `Ok` side carries advisory (non-`Error`-severity)
+/// diagnostics alongside the model: today the only advisory is `RESOLVE_UNDECLARED_PROVIDER`,
+/// which lets every corpus model keep elaborating even with unregistered provider calls
+/// (contract C1.2). `Err` is returned only when at least one `Error`-severity diagnostic
+/// remains, and (as before) carries the complete diagnostic list, advisories included.
 pub fn elaborate_module(
     module: &ScientificModule,
     registry: &UnitRegistry,
-) -> Result<SemanticModule, Vec<SourceDiagnostic>> {
+) -> Result<(SemanticModule, Vec<SourceDiagnostic>), Vec<SourceDiagnostic>> {
     let mut diagnostics = vec![];
     let models = module
         .models
@@ -395,15 +509,21 @@ pub fn elaborate_module(
         ))
     });
     diagnostics.dedup();
-    if diagnostics.is_empty() {
-        Ok(SemanticModule {
-            schema: SEMANTIC_SCHEMA.into(),
-            name: module.name.clone(),
-            models,
-            span: module.span,
-        })
-    } else {
+    if diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.severity == SourceSeverity::Error)
+    {
         Err(diagnostics)
+    } else {
+        Ok((
+            SemanticModule {
+                schema: SEMANTIC_SCHEMA.into(),
+                name: module.name.clone(),
+                models,
+                span: module.span,
+            },
+            diagnostics,
+        ))
     }
 }
 
@@ -418,6 +538,8 @@ struct Elaborator<'a> {
     domain_names: BTreeMap<String, DomainId>,
     regions: Vec<SemanticRegion>,
     region_names: BTreeMap<(RegionKind, String), RegionId>,
+    providers: Vec<SemanticProvider>,
+    provider_names: BTreeMap<String, ProviderId>,
     symbols: Vec<SemanticSymbol>,
     symbol_names: BTreeMap<String, SymbolId>,
     expressions: Vec<SemanticExpr>,
@@ -433,6 +555,8 @@ impl<'a> Elaborator<'a> {
             domain_names: BTreeMap::new(),
             regions: vec![],
             region_names: BTreeMap::new(),
+            providers: vec![],
+            provider_names: BTreeMap::new(),
             symbols: vec![],
             symbol_names: BTreeMap::new(),
             expressions: vec![],
@@ -442,6 +566,7 @@ impl<'a> Elaborator<'a> {
 
     fn run(mut self, diagnostics: &mut Vec<SourceDiagnostic>) -> SemanticModel {
         self.declare_domains(diagnostics);
+        self.declare_providers(diagnostics);
         self.declare_value_symbols(diagnostics);
         self.declare_regions();
         self.elaborate_definitions(diagnostics);
@@ -449,6 +574,7 @@ impl<'a> Elaborator<'a> {
             name: self.source.name.clone(),
             domains: self.domains,
             regions: self.regions,
+            providers: self.providers,
             symbols: self.symbols,
             expressions: self.expressions.into(),
             declarations: self.declarations,
@@ -500,6 +626,136 @@ impl<'a> Elaborator<'a> {
                 coordinates: domain.coordinates.clone(),
                 span: domain.span,
             });
+        }
+    }
+
+    fn declare_providers(&mut self, diagnostics: &mut Vec<SourceDiagnostic>) {
+        for provider in &self.source.providers {
+            if let Some(previous) = self.provider_names.get(&provider.name).copied() {
+                diagnostics.push(duplicate(
+                    "provider",
+                    &provider.name,
+                    provider.span,
+                    self.providers[previous.index()].span,
+                ));
+                continue;
+            }
+            if is_intrinsic_call(&provider.name) {
+                diagnostics.push(error(
+                    "RESOLVE_DUPLICATE_NAME",
+                    format!(
+                        "provider `{}` cannot reuse the reserved intrinsic function name",
+                        provider.name
+                    ),
+                    provider.span,
+                ));
+                continue;
+            }
+            let inputs = provider
+                .inputs
+                .iter()
+                .map(|input| match &input.kind {
+                    None => SemanticProviderInput {
+                        name: input.name.clone(),
+                        quantity_kind: None,
+                        dimension: None,
+                        shape: ValueShape::Scalar,
+                        span: input.span,
+                    },
+                    Some(kind_name) => {
+                        let kind = QuantityKindId::new(kind_name.clone());
+                        let dimension = known_kind_dimension(&kind);
+                        SemanticProviderInput {
+                            name: input.name.clone(),
+                            quantity_kind: Some(kind),
+                            dimension,
+                            shape: ValueShape::Scalar,
+                            span: input.span,
+                        }
+                    }
+                })
+                .collect::<Vec<_>>();
+            let declared_output_kind = QuantityKindId::new(provider.output_kind.clone());
+            let (output_dimension, canonical_output_kind) = self.declared_quantity_type(
+                Some(&declared_output_kind),
+                Some(provider.output_kind_span),
+                provider.unit.as_ref(),
+                provider.unit_span,
+                diagnostics,
+            );
+            let output = SemanticProviderOutput {
+                quantity_kind: canonical_output_kind.unwrap_or(declared_output_kind),
+                dimension: output_dimension,
+                shape: provider.shape.clone(),
+                unit: provider.unit.clone(),
+            };
+            let domain = self.provider_domain(provider, &inputs, diagnostics);
+            let id = ProviderId(self.providers.len() as u32);
+            self.provider_names.insert(provider.name.clone(), id);
+            self.providers.push(SemanticProvider {
+                id,
+                name: provider.name.clone(),
+                inputs,
+                output,
+                locality: provider.locality.clone(),
+                differentiability: provider.differentiability.clone(),
+                domain,
+                span: provider.span,
+            });
+        }
+    }
+
+    /// Canonicalize each `domain { input in [lo, hi]; }` bound into an SI-valued `InputBounds`,
+    /// reusing the property vocabulary's `PropertyDomain`/`InputBounds` (contract C1.1/C1.2)
+    /// rather than a parallel type. An unresolvable unit is `RESOLVE_UNKNOWN_UNIT`, matching
+    /// how a field's own `unit`/`nominal` literals are already diagnosed.
+    fn provider_domain(
+        &self,
+        provider: &ProviderDecl,
+        inputs: &[SemanticProviderInput],
+        diagnostics: &mut Vec<SourceDiagnostic>,
+    ) -> PropertyDomain {
+        let mut validity_bounds = vec![];
+        for bound in &provider.domain {
+            let kind = inputs
+                .iter()
+                .find(|input| input.name == bound.input)
+                .and_then(|input| input.quantity_kind.clone());
+            let mut min = bound.min.clone();
+            let mut max = bound.max.clone();
+            if let Some(kind) = kind {
+                min.kind = kind.clone();
+                max.kind = kind;
+            }
+            match (
+                canonicalize_authored_quantity(self.registry, &min),
+                canonicalize_authored_quantity(self.registry, &max),
+            ) {
+                (Ok(min), Ok(max)) => validity_bounds.push(InputBounds {
+                    input: bound.input.clone(),
+                    min: Some(min.value_si()),
+                    max: Some(max.value_si()),
+                }),
+                (min_result, max_result) => {
+                    for result in [min_result, max_result] {
+                        if let Err(error_value) = result {
+                            diagnostics.push(error(
+                                "RESOLVE_UNKNOWN_UNIT",
+                                error_value.to_string(),
+                                bound.span,
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+        PropertyDomain {
+            physical_bounds: vec![],
+            validity_bounds,
+            phase_constraints: vec![],
+            composition_constraints: vec![],
+            assumptions: vec![],
+            out_of_validity: OutOfValidityPolicy::Error,
         }
     }
 
@@ -592,6 +848,17 @@ impl<'a> Elaborator<'a> {
             self.intern_region(RegionKind::Interface, name, None, condition.region.span());
         }
         for form in &self.source.forms {
+            // GX-A6: a region referenced only through a form's own facet/interface/point
+            // measures has no boundary-condition target to infer a domain from, but it still
+            // has a natural one -- the same form's `cell(<Domain>)` measure, when the form
+            // declares one.
+            let form_domain = form
+                .integrals
+                .iter()
+                .find_map(|integral| match &integral.measure {
+                    Measure::Cell(name) => self.domain_names.get(name).copied(),
+                    _ => None,
+                });
             for integral in &form.integrals {
                 match &integral.measure {
                     Measure::Cell(_) => {}
@@ -599,7 +866,7 @@ impl<'a> Elaborator<'a> {
                         self.intern_region(
                             RegionKind::ExteriorFacet,
                             name,
-                            None,
+                            form_domain,
                             integral.target_span,
                         );
                     }
@@ -607,15 +874,25 @@ impl<'a> Elaborator<'a> {
                         self.intern_region(
                             RegionKind::InteriorFacet,
                             name,
-                            None,
+                            form_domain,
                             integral.target_span,
                         );
                     }
                     Measure::Interface(name) => {
-                        self.intern_region(RegionKind::Interface, name, None, integral.target_span);
+                        self.intern_region(
+                            RegionKind::Interface,
+                            name,
+                            form_domain,
+                            integral.target_span,
+                        );
                     }
                     Measure::Point(name) => {
-                        self.intern_region(RegionKind::Point, name, None, integral.target_span);
+                        self.intern_region(
+                            RegionKind::Point,
+                            name,
+                            form_domain,
+                            integral.target_span,
+                        );
                     }
                 }
             }
@@ -1274,8 +1551,23 @@ impl<'a> Elaborator<'a> {
                     .iter()
                     .map(|arg| self.elaborate_expr(arg, diagnostics))
                     .collect();
-                let ty = self.call_type(function, &args, expression.span(), diagnostics);
-                (self.call_kind(function, args), ty)
+                if is_intrinsic_call(function) {
+                    let ty = self.call_type(function, &args, expression.span(), diagnostics);
+                    (self.call_kind(function, args), ty)
+                } else if let Some(&provider) = self.provider_names.get(function) {
+                    self.provider_call(provider, args, expression.span(), diagnostics)
+                } else {
+                    diagnostics.push(advisory(
+                        "RESOLVE_UNDECLARED_PROVIDER",
+                        format!(
+                            "call to undeclared provider `{function}`; declare \
+                             `provider {function}(...) -> Kind;` to type it"
+                        ),
+                        expression.span(),
+                    ));
+                    let ty = self.call_type(function, &args, expression.span(), diagnostics);
+                    (self.call_kind(function, args), ty)
+                }
             }
             Expr::Index { value, indices, .. } => {
                 let value = self.elaborate_expr(value, diagnostics);
@@ -1658,6 +1950,74 @@ impl<'a> Elaborator<'a> {
                 args,
             },
         }
+    }
+
+    /// Type and build a `ProviderCall` node from a declared provider signature (contract
+    /// C1.2): arity (`TYPE_PROVIDER_ARITY`), per-input selector literals
+    /// (`TYPE_PROVIDER_SELECTOR`), and per-input dimension (`TYPE_PROVIDER_INPUT_KIND`, only
+    /// when both the declared and argument dimensions are known).
+    fn provider_call(
+        &mut self,
+        provider: ProviderId,
+        args: Vec<ExprId>,
+        span: SourceSpan,
+        diagnostics: &mut Vec<SourceDiagnostic>,
+    ) -> (SemanticExprKind, SemanticType) {
+        let signature = &self.providers[provider.index()];
+        if args.len() != signature.inputs.len() {
+            diagnostics.push(error(
+                "TYPE_PROVIDER_ARITY",
+                format!(
+                    "provider `{}` expects {} argument(s), got {}",
+                    signature.name,
+                    signature.inputs.len(),
+                    args.len()
+                ),
+                span,
+            ));
+        }
+        for (index, input) in signature.inputs.iter().enumerate() {
+            let Some(&arg) = args.get(index) else {
+                continue;
+            };
+            let arg_expr = &self.expressions[arg.index()];
+            let arg_span = arg_expr.span;
+            let arg_ty = arg_expr.ty.clone();
+            if input.quantity_kind.is_none() {
+                if self.integer_literal(arg).is_none() {
+                    diagnostics.push(error(
+                        "TYPE_PROVIDER_SELECTOR",
+                        format!(
+                            "provider `{}` input `{}` requires an integer selector literal",
+                            signature.name, input.name
+                        ),
+                        arg_span,
+                    ));
+                }
+            } else if let (Some(expected), Some(actual)) = (input.dimension, arg_ty.dimension)
+                && expected != actual
+                && !matches!(arg_ty.shape, SemanticShape::Deferred)
+            {
+                diagnostics.push(error(
+                    "TYPE_PROVIDER_INPUT_KIND",
+                    format!(
+                        "provider `{}` input `{}` expects dimension `{expected}`, argument has dimension `{actual}`",
+                        signature.name, input.name
+                    ),
+                    arg_span,
+                ));
+            }
+        }
+        let output = &signature.output;
+        let ty = SemanticType {
+            shape: SemanticShape::Numeric(output.shape.clone()),
+            axes: axes(&output.shape),
+            dimension: output.dimension,
+            quantity_kind: Some(output.quantity_kind.clone()),
+            frame: Frame::Neutral,
+            role: SemanticRole::Provider,
+        };
+        (SemanticExprKind::ProviderCall { provider, args }, ty)
     }
 
     fn curl_type(
@@ -2333,4 +2693,57 @@ fn duplicate(kind: &str, name: &str, span: SourceSpan, previous: SourceSpan) -> 
 
 fn error(code: &'static str, message: impl Into<String>, span: SourceSpan) -> SourceDiagnostic {
     SourceDiagnostic::error(code, message, span).phase("elaboration")
+}
+
+/// A non-fatal diagnostic (contract C1.2: `RESOLVE_UNDECLARED_PROVIDER`). Advisories never
+/// fail `elaborate_module`/`compile_semantics`; see `SemanticCompilation::advisories`.
+fn advisory(code: &'static str, message: impl Into<String>, span: SourceSpan) -> SourceDiagnostic {
+    SourceDiagnostic::warning(code, message, span).phase("elaboration")
+}
+
+/// Function names dispatched to a fixed intrinsic meaning by `call_type`/`call_kind`. A
+/// declared `provider` may not reuse one of these names (see `declare_providers`), and a call
+/// to one of these names is never looked up as a provider even if a same-named provider
+/// exists, so intrinsic semantics can never be shadowed.
+pub(crate) const INTRINSIC_CALL_NAMES: &[&str] = &[
+    "boundary",
+    "interface",
+    "interface_region",
+    // Synthesized directly by `elaborate_expr`'s `Expr::Name` arm for the bare identifier `t`;
+    // never reached through `Expr::Call`'s provider/intrinsic dispatch, but still not a real
+    // function call a `provider` declaration or an unbound-provider slot should ever name.
+    "time",
+    "dt",
+    "grad",
+    "rotated_grad",
+    "sym_grad",
+    "div",
+    "curl",
+    "dot",
+    "inner",
+    "sin",
+    "cos",
+    "exp",
+    "log",
+    "ln",
+    "sqrt",
+    "abs",
+    "min",
+    "max",
+    "integrate",
+    "trace",
+    "trace_minus",
+    "trace_plus",
+    "jump",
+    "average",
+    "conj",
+    "normal_component",
+    "normal_component_minus",
+    "normal_component_plus",
+    "zero_vector",
+    "zero_tensor",
+];
+
+pub(crate) fn is_intrinsic_call(name: &str) -> bool {
+    INTRINSIC_CALL_NAMES.contains(&name)
 }

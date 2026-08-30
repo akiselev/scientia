@@ -29,6 +29,7 @@ pub struct ScientificModel {
     pub parameters: Vec<ValueDecl>,
     pub constants: Vec<ValueDecl>,
     pub sources: Vec<ValueDecl>,
+    pub providers: Vec<ProviderDecl>,
     pub properties: Vec<PropertyBinding>,
     pub constitutive_laws: Vec<ConstitutiveBinding>,
     pub equations: Vec<EquationDecl>,
@@ -147,6 +148,42 @@ pub struct PropertyBinding {
 pub struct ConstitutiveBinding {
     pub name: String,
     pub law: Expr,
+    pub span: SourceSpan,
+}
+
+/// `provider NAME(input: Kind, ...) -> Kind { ... }` (GX-A1, contract C1.1). Inputs use the
+/// pseudo-kind `selector` (represented as `kind: None`) for a non-physical integer catalog
+/// selector; every other input names a Quantitas quantity kind.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ProviderDecl {
+    pub name: String,
+    pub inputs: Vec<ProviderInputDecl>,
+    pub output_kind: String,
+    pub output_kind_span: SourceSpan,
+    pub unit: Option<UnitId>,
+    pub unit_span: Option<SourceSpan>,
+    pub shape: ValueShape,
+    pub locality: PropertyLocality,
+    pub differentiability: DerivativeContract,
+    pub domain: Vec<ProviderDomainBound>,
+    pub span: SourceSpan,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ProviderInputDecl {
+    pub name: String,
+    /// `None` is the `selector` pseudo-kind; `Some(name)` is a Quantitas quantity kind name.
+    pub kind: Option<String>,
+    pub kind_span: SourceSpan,
+    pub span: SourceSpan,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ProviderDomainBound {
+    pub input: String,
+    pub input_span: SourceSpan,
+    pub min: QuantityLiteral,
+    pub max: QuantityLiteral,
     pub span: SourceSpan,
 }
 
@@ -683,6 +720,7 @@ impl Parser {
             parameters: vec![],
             constants: vec![],
             sources: vec![],
+            providers: vec![],
             properties: vec![],
             constitutive_laws: vec![],
             equations: vec![],
@@ -715,6 +753,10 @@ impl Parser {
             } else if self.eat_ident("source") {
                 if let Some(x) = self.value_decl() {
                     model.sources.push(x);
+                }
+            } else if self.eat_ident("provider") {
+                if let Some(x) = self.provider() {
+                    model.providers.push(x);
                 }
             } else if self.eat_ident("property") {
                 if let Some(x) = self.property() {
@@ -1043,6 +1085,212 @@ impl Parser {
         let law = self.expr(0)?;
         self.expect_punct(';');
         Some(ConstitutiveBinding { name, law, span })
+    }
+
+    fn provider(&mut self) -> Option<ProviderDecl> {
+        let (name, span) = self.expect_ident_value()?;
+        self.expect_punct('(');
+        let mut inputs = vec![];
+        while !matches!(self.token().kind, TokenKind::Eof | TokenKind::Punct(')')) {
+            let (input_name, input_span) = self.expect_ident_value()?;
+            self.expect_punct(':');
+            let (kind_name, kind_span) = self.expect_ident_value()?;
+            let kind = if kind_name == "selector" {
+                None
+            } else {
+                Some(kind_name)
+            };
+            inputs.push(ProviderInputDecl {
+                name: input_name,
+                kind,
+                kind_span,
+                span: input_span,
+            });
+            if !self.eat_punct(',') {
+                break;
+            }
+        }
+        self.expect_punct(')');
+        if !self.eat_op("->") {
+            self.error("provider requires `-> QuantityKind`".into());
+        }
+        let (output_kind, output_kind_span) = self
+            .expect_ident_value()
+            .unwrap_or_else(|| ("scientia:Unspecified".into(), self.token().span));
+        let mut unit = None;
+        let mut unit_span = None;
+        let mut shape = ValueShape::Scalar;
+        let mut locality = PropertyLocality::Pointwise;
+        let mut differentiability = DerivativeContract::Symbolic;
+        let mut domain = vec![];
+        if self.eat_punct('{') {
+            while !matches!(self.token().kind, TokenKind::Eof | TokenKind::Punct('}')) {
+                if self.eat_ident("domain") {
+                    self.expect_punct('{');
+                    while !matches!(self.token().kind, TokenKind::Eof | TokenKind::Punct('}')) {
+                        let Some((input_name, input_span)) = self.expect_ident_value() else {
+                            self.sync();
+                            continue;
+                        };
+                        if !self.eat_ident("in") {
+                            self.error("provider domain bound requires `in`".into());
+                        }
+                        self.expect_punct('[');
+                        let min = self.quantity_literal(None);
+                        self.eat_punct(',');
+                        let max = self.quantity_literal(None);
+                        self.expect_punct(']');
+                        self.eat_punct(';');
+                        if let (Some(min), Some(max)) = (min, max) {
+                            domain.push(ProviderDomainBound {
+                                input: input_name,
+                                input_span,
+                                min,
+                                max,
+                                span: input_span,
+                            });
+                        }
+                    }
+                    self.expect_punct('}');
+                    self.eat_punct(';');
+                    continue;
+                }
+                let Some((key, _key_span)) = self.expect_ident_value() else {
+                    self.sync();
+                    continue;
+                };
+                self.eat_op("=");
+                match key.as_str() {
+                    "unit" => {
+                        if let Some((text, span)) = self.unit_expr() {
+                            unit = Some(UnitId::new(text));
+                            unit_span = Some(span);
+                        }
+                    }
+                    "shape" => shape = self.provider_shape(),
+                    "locality" => {
+                        if let Some((name, name_span)) = self.expect_ident_value() {
+                            locality = match name.as_str() {
+                                "pointwise" => PropertyLocality::Pointwise,
+                                "element_constant" => PropertyLocality::ElementConstant,
+                                "external" => PropertyLocality::ExternalProvider,
+                                _ => {
+                                    self.errors.push(ScientificError::Syntax {
+                                        message: format!("unknown provider locality `{name}`"),
+                                        span: name_span,
+                                    });
+                                    PropertyLocality::Pointwise
+                                }
+                            };
+                        }
+                    }
+                    "differentiability" => {
+                        if let Some((name, name_span)) = self.expect_ident_value() {
+                            differentiability = match name.as_str() {
+                                "symbolic" => DerivativeContract::Symbolic,
+                                "analytic_provided" => DerivativeContract::AnalyticProvided,
+                                "automatic" => DerivativeContract::Automatic,
+                                "piecewise" => DerivativeContract::Piecewise,
+                                "numerical_allowed" => DerivativeContract::NumericalAllowed,
+                                "none" => DerivativeContract::None,
+                                _ => {
+                                    self.errors.push(ScientificError::Syntax {
+                                        message: format!(
+                                            "unknown provider differentiability `{name}`"
+                                        ),
+                                        span: name_span,
+                                    });
+                                    DerivativeContract::Symbolic
+                                }
+                            };
+                        }
+                    }
+                    _ => {
+                        self.error(format!("unknown provider attribute `{key}`"));
+                        self.sync();
+                    }
+                }
+                self.eat_punct(';');
+            }
+            self.expect_punct('}');
+        }
+        self.eat_punct(';');
+        Some(ProviderDecl {
+            name,
+            inputs,
+            output_kind,
+            output_kind_span,
+            unit,
+            unit_span,
+            shape,
+            locality,
+            differentiability,
+            domain,
+            span,
+        })
+    }
+
+    /// A minimal product/quotient unit-symbol grammar (`W/(m*K)`): atoms are identifiers or a
+    /// parenthesized sub-expression, combined left to right with `*`/`/`. The result is not
+    /// dimensionally evaluated here; it becomes the literal `UnitId` symbol resolved later
+    /// against the registry, exactly like a simple `unit = K;` symbol.
+    fn unit_expr(&mut self) -> Option<(String, SourceSpan)> {
+        let (mut text, mut span) = self.unit_atom()?;
+        loop {
+            if self.eat_op("*") {
+                let (rhs, rhs_span) = self.unit_atom()?;
+                text.push('*');
+                text.push_str(&rhs);
+                span = SourceSpan::new(span.start, rhs_span.end);
+            } else if self.eat_op("/") {
+                let (rhs, rhs_span) = self.unit_atom()?;
+                text.push('/');
+                text.push_str(&rhs);
+                span = SourceSpan::new(span.start, rhs_span.end);
+            } else {
+                break;
+            }
+        }
+        Some((text, span))
+    }
+
+    fn unit_atom(&mut self) -> Option<(String, SourceSpan)> {
+        if matches!(self.token().kind, TokenKind::Punct('(')) {
+            let start = self.token().span.start;
+            self.bump();
+            let (inner, _) = self.unit_expr()?;
+            let end = self.token().span.end;
+            self.expect_punct(')');
+            Some((format!("({inner})"), SourceSpan::new(start, end)))
+        } else {
+            self.expect_ident_value()
+        }
+    }
+
+    fn provider_shape(&mut self) -> ValueShape {
+        if self.eat_ident("scalar") {
+            ValueShape::Scalar
+        } else if self.eat_ident("vector") {
+            self.expect_punct('(');
+            let n = self.number_u8(3);
+            self.expect_punct(')');
+            ValueShape::Vector(n)
+        } else if self.eat_ident("tensor") {
+            self.expect_punct('(');
+            let a = self.number_u8(3);
+            self.eat_punct(',');
+            let b = self.number_u8(a);
+            self.expect_punct(')');
+            ValueShape::Tensor { rows: a, cols: b }
+        } else if self.eat_ident("symmetric_tensor") {
+            self.expect_punct('(');
+            let n = self.number_u8(3);
+            self.expect_punct(')');
+            ValueShape::SymmetricTensor(n)
+        } else {
+            self.error("unknown provider shape".into());
+            ValueShape::Scalar
+        }
     }
 
     fn equation(&mut self) -> Option<EquationDecl> {
@@ -1516,6 +1764,67 @@ pub fn format_scientific_module(module: &ScientificModule) -> String {
         for s in &model.sources {
             out.push_str(&format_value_decl("source", s));
         }
+        for p in &model.providers {
+            out.push_str(&format!(
+                "    provider {}({}) -> {}",
+                p.name,
+                p.inputs
+                    .iter()
+                    .map(|input| format!(
+                        "{}: {}",
+                        input.name,
+                        input.kind.as_deref().unwrap_or("selector")
+                    ))
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                p.output_kind
+            ));
+            let has_body = p.unit.is_some()
+                || p.shape != ValueShape::Scalar
+                || p.locality != PropertyLocality::Pointwise
+                || p.differentiability != DerivativeContract::Symbolic
+                || !p.domain.is_empty();
+            if has_body {
+                out.push_str(" {\n");
+                if let Some(unit) = &p.unit {
+                    out.push_str(&format!("        unit = {};\n", unit.as_str()));
+                }
+                if p.shape != ValueShape::Scalar {
+                    out.push_str(&format!(
+                        "        shape = {};\n",
+                        provider_shape_name(&p.shape)
+                    ));
+                }
+                if p.locality != PropertyLocality::Pointwise {
+                    out.push_str(&format!(
+                        "        locality = {};\n",
+                        provider_locality_name(&p.locality)
+                    ));
+                }
+                if p.differentiability != DerivativeContract::Symbolic {
+                    out.push_str(&format!(
+                        "        differentiability = {};\n",
+                        provider_differentiability_name(&p.differentiability)
+                    ));
+                }
+                if !p.domain.is_empty() {
+                    out.push_str("        domain {\n");
+                    for bound in &p.domain {
+                        out.push_str(&format!(
+                            "            {} in [{} {}, {} {}];\n",
+                            bound.input,
+                            bound.min.value,
+                            bound.min.unit.as_str(),
+                            bound.max.value,
+                            bound.max.unit.as_str()
+                        ));
+                    }
+                    out.push_str("        }\n");
+                }
+                out.push_str("    }");
+            }
+            out.push_str(";\n");
+        }
         for p in &model.properties {
             out.push_str(&format!(
                 "    property {} = {};\n",
@@ -1652,6 +1961,32 @@ fn shape_name(s: &ValueShape) -> String {
         ValueShape::Vector(n) => format!("vector({n})"),
         ValueShape::Tensor { rows, cols } => format!("tensor({rows},{cols})"),
         ValueShape::SymmetricTensor(n) => format!("tensor({n},{n})"),
+    }
+}
+/// Unlike [`shape_name`] (used for `FieldDecl`, whose parser never produces
+/// `SymmetricTensor`), provider shapes can parse `symmetric_tensor(n)` directly, so this
+/// renders it distinctly to keep provider formatting idempotent.
+fn provider_shape_name(s: &ValueShape) -> String {
+    match s {
+        ValueShape::SymmetricTensor(n) => format!("symmetric_tensor({n})"),
+        other => shape_name(other),
+    }
+}
+fn provider_locality_name(l: &PropertyLocality) -> &'static str {
+    match l {
+        PropertyLocality::Pointwise => "pointwise",
+        PropertyLocality::ElementConstant => "element_constant",
+        PropertyLocality::ExternalProvider => "external",
+    }
+}
+fn provider_differentiability_name(d: &DerivativeContract) -> &'static str {
+    match d {
+        DerivativeContract::Symbolic => "symbolic",
+        DerivativeContract::AnalyticProvided => "analytic_provided",
+        DerivativeContract::Automatic => "automatic",
+        DerivativeContract::Piecewise => "piecewise",
+        DerivativeContract::NumericalAllowed => "numerical_allowed",
+        DerivativeContract::None => "none",
     }
 }
 fn space_name(s: &SpaceFamily) -> &str {
@@ -2797,6 +3132,31 @@ model NonlinearHeat {
         env.insert("T".into(), 300.0);
         let d = eval_expr(&differentiate_expr(&expr, "T").unwrap(), &env).unwrap();
         assert!((d - 0.5).abs() < 1e-12);
+    }
+
+    #[test]
+    fn comparison_operators_are_refused_not_zeroed_by_exact_algebra() {
+        let span = SourceSpan::default();
+        let expr = Expr::Binary {
+            op: BinaryOp::Lt,
+            lhs: Box::new(Expr::Name {
+                name: "T".into(),
+                span,
+            }),
+            rhs: Box::new(Expr::Number {
+                value: 300.0,
+                unit: None,
+                span,
+            }),
+            span,
+        };
+        let err = differentiate_expr(&expr, "T").unwrap_err();
+        match err {
+            ScientificError::Property(message) => {
+                assert!(message.contains("outside consumer-neutral exact algebra"));
+            }
+            other => panic!("expected ScientificError::Property, got {other:?}"),
+        }
     }
 
     #[test]

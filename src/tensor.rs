@@ -1024,7 +1024,9 @@ fn collect_direct_symbols(
             collect_direct_symbols(expressions, *lhs, symbols)?;
             collect_direct_symbols(expressions, *rhs, symbols)?;
         }
-        SemanticExprKind::Call { args, .. } | SemanticExprKind::Vector { elements: args } => {
+        SemanticExprKind::Call { args, .. }
+        | SemanticExprKind::ProviderCall { args, .. }
+        | SemanticExprKind::Vector { elements: args } => {
             for arg in args {
                 collect_direct_symbols(expressions, *arg, symbols)?;
             }
@@ -1225,13 +1227,14 @@ impl Lowerer<'_> {
                     .map(|axis| axis.extent as usize)
                     .collect()
             }
-            SemanticExprKind::Call { args, .. } => args
-                .iter()
-                .map(|arg| self.shape(*arg, context))
-                .collect::<Result<Vec<_>, _>>()?
-                .into_iter()
-                .find(|shape| !shape.is_empty())
-                .unwrap_or_default(),
+            SemanticExprKind::Call { args, .. } | SemanticExprKind::ProviderCall { args, .. } => {
+                args.iter()
+                    .map(|arg| self.shape(*arg, context))
+                    .collect::<Result<Vec<_>, _>>()?
+                    .into_iter()
+                    .find(|shape| !shape.is_empty())
+                    .unwrap_or_default()
+            }
             SemanticExprKind::Index { .. } => Vec::new(),
             SemanticExprKind::Vector { elements } => vec![elements.len()],
             SemanticExprKind::Symbol { .. }
@@ -1352,7 +1355,19 @@ impl Lowerer<'_> {
                     .iter()
                     .map(|axis| axis.rhs as usize)
                     .collect::<BTreeSet<_>>();
-                let expected_rank = lhs_shape.len() + rhs_shape.len() - 2 * axes.len();
+                let contracted_axis_count = axes.len();
+                let expected_rank = lhs_shape
+                    .len()
+                    .checked_add(rhs_shape.len())
+                    .and_then(|combined_rank| combined_rank.checked_sub(2 * contracted_axis_count))
+                    .ok_or_else(|| {
+                        TensorCompileError::Shape(format!(
+                            "contraction {id} contracts {contracted_axis_count} axis pairs, \
+                             which exceeds the combined operand rank {} + {}",
+                            lhs_shape.len(),
+                            rhs_shape.len()
+                        ))
+                    })?;
                 if expected_rank != indices.len() {
                     return Err(TensorCompileError::Shape(format!(
                         "contraction {id} expects rank {expected_rank}, got {} indices",
@@ -1472,7 +1487,11 @@ impl Lowerer<'_> {
             SemanticExprKind::Call { function, args } => {
                 self.lower_call(&function, &args, indices, context)
             }
-            SemanticExprKind::TensorTrace { .. }
+            // A provider call directly inside an integrand needs property-kernel lowering
+            // (GX-A2/A3, not implemented here); it still refuses cleanly rather than
+            // attempting kernel lowering.
+            SemanticExprKind::ProviderCall { .. }
+            | SemanticExprKind::TensorTrace { .. }
             | SemanticExprKind::Conjugate { .. }
             | SemanticExprKind::Index { .. }
             | SemanticExprKind::Vector { .. }

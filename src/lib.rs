@@ -8,6 +8,7 @@
 
 mod algebra;
 
+pub mod binding_slots;
 pub mod derivative;
 pub mod evidence;
 pub mod form_interpreter;
@@ -27,6 +28,10 @@ pub mod tensor;
 pub mod tensor_interpreter;
 pub mod verification;
 
+pub use binding_slots::{
+    BINDING_SLOTS_SCHEMA, BindingSlot, BindingSlotError, BindingSlotManifest, SlotInput, SlotKind,
+    SlotStatus, derive_binding_slots, validate_binding_slot_manifest,
+};
 pub use derivative::{
     ActiveSet, Control, DERIVATIVE_REQUEST_SCHEMA, DerivativeConvention, DerivativeDependence,
     DerivativeLevel, DerivativeProductSpec, DerivativeRefusal, DerivativeRequest,
@@ -75,17 +80,19 @@ pub use requirements::{
     SpaceSystemRequirement, TraceMapping, TraceRequirement, infer_form_requirements,
 };
 pub use scientific::{
-    CouplingGraph, PropertyDefinition, ScientificError, ScientificModel, ScientificModule,
-    TimeStateSemantics, canonicalize_authored_quantity, derive_coupling_graph,
+    CouplingGraph, DerivativeContract, PropertyDefinition, PropertyDomain, PropertyLocality,
+    ProviderDecl, ProviderDomainBound, ProviderInputDecl, ScientificError, ScientificModel,
+    ScientificModule, TimeStateSemantics, canonicalize_authored_quantity, derive_coupling_graph,
     format_scientific_module, parse_scientific_module, parse_scientific_module_diagnostics,
     resolve_modules, semantic_digest, validate_quantities,
 };
 pub use semantic::{
-    Axis, AxisContraction, DeclarationId, DifferentialOperator, DomainId, ExprId, Frame, RegionId,
-    RegionKind, SemanticCompilation, SemanticDeclaration, SemanticDeclarationKind, SemanticDomain,
-    SemanticExpr, SemanticExprKind, SemanticIntegral, SemanticMeasure, SemanticModel,
-    SemanticModule, SemanticRegion, SemanticRole, SemanticShape, SemanticSymbol, SemanticType,
-    SymbolId, TraceSide, compile_semantics, elaborate_module, semantic_arena_digest,
+    Axis, AxisContraction, DeclarationId, DifferentialOperator, DomainId, ExprId, Frame,
+    ProviderId, RegionId, RegionKind, SemanticCompilation, SemanticDeclaration,
+    SemanticDeclarationKind, SemanticDomain, SemanticExpr, SemanticExprKind, SemanticIntegral,
+    SemanticMeasure, SemanticModel, SemanticModule, SemanticProvider, SemanticProviderInput,
+    SemanticProviderOutput, SemanticRegion, SemanticRole, SemanticShape, SemanticSymbol,
+    SemanticType, SymbolId, TraceSide, compile_semantics, elaborate_module, semantic_arena_digest,
 };
 pub use source::{RelatedSpan, SourceDiagnostic, SourceSeverity, SourceSpan, Spanned};
 pub use structural::scc::{Digraph, GraphError, Sccs, tarjan_scc};

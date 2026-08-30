@@ -10,9 +10,9 @@ use crate::scientific::{
     ValueShape,
 };
 use crate::semantic::{
-    AxisContraction, DeclarationId, DifferentialOperator, DomainId, ExprId, RegionId, RegionKind,
-    SemanticDeclarationKind, SemanticExpr, SemanticExprKind, SemanticMeasure, SemanticModel,
-    SemanticModule, SemanticRole, SemanticShape, SemanticType, SymbolId, TraceSide,
+    AxisContraction, DeclarationId, DifferentialOperator, DomainId, ExprId, ProviderId, RegionId,
+    RegionKind, SemanticDeclarationKind, SemanticExpr, SemanticExprKind, SemanticMeasure,
+    SemanticModel, SemanticModule, SemanticRole, SemanticShape, SemanticType, SymbolId, TraceSide,
 };
 use crate::source::SourceSpan;
 use serde::{Deserialize, Serialize};
@@ -994,7 +994,9 @@ fn collect_evaluations_inner(
                 inputs,
             )?;
         }
-        SemanticExprKind::Call { args, .. } | SemanticExprKind::Vector { elements: args } => {
+        SemanticExprKind::Call { args, .. }
+        | SemanticExprKind::ProviderCall { args, .. }
+        | SemanticExprKind::Vector { elements: args } => {
             for arg in args {
                 collect_evaluations_inner(
                     expressions,
@@ -1052,7 +1054,9 @@ fn infer_boundary_requirements(
     let mut partitions = Vec::new();
     for assumption in &form.receipt.assumptions {
         match assumption {
-            FormAssumption::ExteriorRegionsPartitionBoundary { domain, regions } => {
+            FormAssumption::ExteriorRegionsPartitionBoundary {
+                domain, regions, ..
+            } => {
                 model
                     .domains
                     .get(domain.index())
@@ -1150,20 +1154,16 @@ fn measure_domain(
         SemanticMeasure::Point { region } => (*region, RegionKind::Point),
         SemanticMeasure::Cell { .. } => unreachable!(),
     };
-    let region = model
-        .regions
-        .get(region_id.index())
-        .filter(|region| region.id == region_id)
-        .ok_or(RequirementInferenceError::InvalidRegion(region_id))?;
-    if region.kind != expected_kind {
+    let (actual_kind, region_domain) = resolve_region(model, region_id)?;
+    if actual_kind != expected_kind {
         return Err(RequirementInferenceError::RegionKindMismatch {
             region: region_id,
             expected: expected_kind,
-            actual: region.kind.clone(),
+            actual: actual_kind,
         });
     }
     let mut domains = BTreeSet::new();
-    if let Some(domain) = region.domain {
+    if let Some(domain) = region_domain {
         domains.insert(domain);
     }
     let mut symbols = BTreeSet::new();
@@ -1206,19 +1206,15 @@ fn validate_region(
     expected: RegionKind,
     domain: Option<DomainId>,
 ) -> Result<(), RequirementInferenceError> {
-    let actual = model
-        .regions
-        .get(region.index())
-        .filter(|candidate| candidate.id == region)
-        .ok_or(RequirementInferenceError::InvalidRegion(region))?;
-    if actual.kind != expected {
+    let (actual_kind, actual_domain) = resolve_region(model, region)?;
+    if actual_kind != expected {
         return Err(RequirementInferenceError::RegionKindMismatch {
             region,
             expected,
-            actual: actual.kind.clone(),
+            actual: actual_kind,
         });
     }
-    if let (Some(expected_domain), Some(actual_domain)) = (domain, actual.domain)
+    if let (Some(expected_domain), Some(actual_domain)) = (domain, actual_domain)
         && expected_domain != actual_domain
     {
         return Err(RequirementInferenceError::IncompatibleMeasureDomains {
@@ -1227,6 +1223,25 @@ fn validate_region(
         });
     }
     Ok(())
+}
+
+/// Resolve a region's kind and domain, whether it is a real declared region or a GX-A6
+/// compiler-synthesized implicit natural-boundary region (see `RegionId::generated_for`); a
+/// generated id is always `ExteriorFacet` with its domain encoded directly in the id, so it
+/// never needs an arena lookup.
+fn resolve_region(
+    model: &SemanticModel,
+    region: RegionId,
+) -> Result<(RegionKind, Option<DomainId>), RequirementInferenceError> {
+    if let Some(domain) = region.generated_domain() {
+        return Ok((RegionKind::ExteriorFacet, Some(domain)));
+    }
+    let region = model
+        .regions
+        .get(region.index())
+        .filter(|candidate| candidate.id == region)
+        .ok_or(RequirementInferenceError::InvalidRegion(region))?;
+    Ok((region.kind.clone(), region.domain))
 }
 
 fn geometry_requirements(
@@ -1389,18 +1404,20 @@ fn polynomial_degree_inner(
             polynomial_degree_inner(expressions, *lhs, bindings, expanding)?,
             polynomial_degree_inner(expressions, *rhs, bindings, expanding)?,
         ),
-        SemanticExprKind::Call { args, .. } => args.iter().try_fold(
-            PolynomialDegree {
-                degree: 0,
-                coefficient_dependent: true,
-            },
-            |degree, arg| {
-                Ok::<_, RequirementInferenceError>(combine_max(
-                    degree,
-                    polynomial_degree_inner(expressions, *arg, bindings, expanding)?,
-                ))
-            },
-        )?,
+        SemanticExprKind::Call { args, .. } | SemanticExprKind::ProviderCall { args, .. } => {
+            args.iter().try_fold(
+                PolynomialDegree {
+                    degree: 0,
+                    coefficient_dependent: true,
+                },
+                |degree, arg| {
+                    Ok::<_, RequirementInferenceError>(combine_max(
+                        degree,
+                        polynomial_degree_inner(expressions, *arg, bindings, expanding)?,
+                    ))
+                },
+            )?
+        }
         SemanticExprKind::Vector { elements } => elements.iter().try_fold(
             PolynomialDegree {
                 degree: 0,
@@ -1623,6 +1640,12 @@ enum NormalizedExpression {
         function: String,
         args: Vec<Self>,
     },
+    /// Normalized the same shape as `Call`, keyed on the declared provider's name rather than
+    /// its arena-local `ProviderId` so grouping stays name-free.
+    ProviderCall {
+        provider: String,
+        args: Vec<Self>,
+    },
     Differential {
         operator: DifferentialOperator,
         arg: Box<Self>,
@@ -1691,6 +1714,13 @@ fn normalize_expression(
         },
         SemanticExprKind::Call { function, args } => NormalizedExpression::Call {
             function: function.clone(),
+            args: args
+                .iter()
+                .map(|arg| normalize(*arg))
+                .collect::<Result<_, _>>()?,
+        },
+        SemanticExprKind::ProviderCall { provider, args } => NormalizedExpression::ProviderCall {
+            provider: bindings.provider_key(*provider),
             args: args
                 .iter()
                 .map(|arg| normalize(*arg))
@@ -1780,6 +1810,7 @@ struct BindingCatalog<'a> {
     domains: BTreeMap<DomainId, String>,
     regions: BTreeMap<RegionId, String>,
     declarations: BTreeMap<DeclarationId, String>,
+    providers: BTreeMap<ProviderId, String>,
     expressions: &'a [SemanticExpr],
 }
 
@@ -1865,12 +1896,26 @@ impl<'a> BindingCatalog<'a> {
                 .iter()
                 .map(|declaration| (declaration.id, declaration.name.clone()))
                 .collect(),
+            providers: model
+                .providers
+                .iter()
+                .map(|provider| (provider.id, provider.name.clone()))
+                .collect(),
             expressions: &form.expressions,
         }
     }
 
     fn get(&self, symbol: SymbolId) -> Option<&BindingInfo<'a>> {
         self.bindings.get(&symbol)
+    }
+
+    /// Name-free normalization still needs a stable, semantic (not arena-index) key for a
+    /// provider call; this mirrors `key()`'s symbol-name resolution.
+    fn provider_key(&self, provider: ProviderId) -> String {
+        self.providers
+            .get(&provider)
+            .cloned()
+            .unwrap_or_else(|| format!("undeclared_provider_{}", provider.0))
     }
 
     fn input_source(
@@ -1960,7 +2005,9 @@ fn collect_symbols(
             collect_symbols(expressions, *lhs, symbols)?;
             collect_symbols(expressions, *rhs, symbols)?;
         }
-        SemanticExprKind::Call { args, .. } | SemanticExprKind::Vector { elements: args } => {
+        SemanticExprKind::Call { args, .. }
+        | SemanticExprKind::ProviderCall { args, .. }
+        | SemanticExprKind::Vector { elements: args } => {
             for arg in args {
                 collect_symbols(expressions, *arg, symbols)?;
             }

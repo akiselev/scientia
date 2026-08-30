@@ -43,7 +43,10 @@ fn to_algebra(expr: &Expr) -> Result<resolvent::Expr, ScientificError> {
                 to_algebra(lhs)?.pow(*value as i32)
             }
             BinaryOp::Eq | BinaryOp::Lt | BinaryOp::Le | BinaryOp::Gt | BinaryOp::Ge => {
-                resolvent::Expr::integer(0)
+                return Err(property(
+                    "expression is outside consumer-neutral exact algebra: comparison \
+                     operators have no exact-algebra projection",
+                ));
             }
         },
         Expr::Call { function, args, .. } => resolvent::Expr::function(

@@ -53,6 +53,17 @@ impl SourceDiagnostic {
             phase: None,
         }
     }
+    pub fn warning(code: impl Into<String>, message: impl Into<String>, span: SourceSpan) -> Self {
+        Self {
+            code: code.into(),
+            severity: SourceSeverity::Warning,
+            message: message.into(),
+            span,
+            related: vec![],
+            hints: vec![],
+            phase: None,
+        }
+    }
     pub fn hint(mut self, hint: impl Into<String>) -> Self {
         self.hints.push(hint.into());
         self
