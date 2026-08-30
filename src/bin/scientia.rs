@@ -1,10 +1,10 @@
-use quantitas::UnitRegistry;
+use quantitas::{QuantityKindRegistry, UnitRegistry};
 use scientia::{
-    IncidenceSystem, SemanticModel, SemanticModule, SourceDiagnostic, compile_schedule,
-    compile_semantics, compile_variational_form, derive_binding_slots, derive_coupling_graph,
-    derive_variational_form, elaborate_module, factor_operator, format_scientific_module,
-    infer_form_requirements, parse_scientific_module_diagnostics, semantic_arena_digest,
-    semantic_digest,
+    FilesystemModuleSource, IncidenceSystem, NoImports, Registries, SemanticModel, SemanticModule,
+    SourceDiagnostic, compile_schedule, compile_semantics_with, compile_variational_form,
+    derive_binding_slots, derive_coupling_graph, derive_variational_form, factor_operator,
+    format_scientific_module, infer_form_requirements, parse_scientific_module_diagnostics,
+    semantic_arena_digest, semantic_digest,
 };
 use std::{env, fs, process::ExitCode};
 
@@ -18,12 +18,51 @@ fn main() -> ExitCode {
     }
 }
 
+/// `--module-root <dir>` (GX-F4): elaborates a model's `use` imports against `.res` files under
+/// `dir` (`use physics.providers.thermal;` -> `<dir>/physics/providers/thermal.res`). Every
+/// command that elaborates supports it uniformly; without it, a model with any `use` import is
+/// refused `RESOLVE_MISSING_MODULE` (hermetic elaboration, contract GX-F4's `NoImports`).
+fn elaborate(
+    source: &str,
+    module_root: Option<&str>,
+) -> Result<scientia::SemanticCompilation, Vec<SourceDiagnostic>> {
+    let units = UnitRegistry::si_bootstrap();
+    let kinds = QuantityKindRegistry::si_bootstrap();
+    let registries = Registries::new(&units, &kinds);
+    match module_root {
+        Some(root) => {
+            let loader = FilesystemModuleSource { root: root.into() };
+            compile_semantics_with(source, registries, &loader)
+        }
+        None => compile_semantics_with(source, registries, &NoImports),
+    }
+}
+
+fn extract_flag_value(args: &[String], flag: &str) -> Option<String> {
+    args.iter()
+        .position(|arg| arg == flag)
+        .and_then(|index| args.get(index + 1))
+        .cloned()
+}
+
 fn run() -> Result<(), String> {
     let mut args = env::args().skip(1);
     let command = args.next().ok_or_else(usage)?;
     let rest = args.collect::<Vec<_>>();
     let json = rest.iter().any(|arg| arg == "--json");
-    let mut positional = rest.iter().filter(|arg| arg.as_str() != "--json");
+    let module_root = extract_flag_value(&rest, "--module-root");
+    let positional_args: Vec<&String> = rest
+        .iter()
+        .enumerate()
+        .filter(|(index, arg)| {
+            if arg.as_str() == "--json" || arg.as_str() == "--module-root" {
+                return false;
+            }
+            *index == 0 || rest[index - 1] != "--module-root"
+        })
+        .map(|(_, arg)| arg)
+        .collect();
+    let mut positional = positional_args.into_iter();
     let file = positional.next().ok_or_else(usage)?;
     let selector = positional.next().map(String::as_str);
     let detail = positional.next().map(String::as_str);
@@ -38,9 +77,9 @@ fn run() -> Result<(), String> {
         .map_err(|diagnostics| render_diagnostics(&source, &diagnostics, json))?;
     match command.as_str() {
         "check" => {
-            let (semantic, advisories) =
-                elaborate_module(&module, &UnitRegistry::si_bootstrap())
-                    .map_err(|diagnostics| render_diagnostics(&source, &diagnostics, json))?;
+            let compilation = elaborate(&source, module_root.as_deref())
+                .map_err(|diagnostics| render_diagnostics(&source, &diagnostics, json))?;
+            let (semantic, advisories) = (compilation.semantic, compilation.advisories);
             if json {
                 println!(
                     "{}",
@@ -71,8 +110,11 @@ fn run() -> Result<(), String> {
         ),
         "fmt" => print!("{}", format_scientific_module(&module)),
         "freeze" => {
-            let (semantic, _advisories) = elaborate_module(&module, &UnitRegistry::si_bootstrap())
-                .map_err(|diagnostics| render_diagnostics(&source, &diagnostics, json))?;
+            let (semantic, _advisories) = {
+                let compilation = elaborate(&source, module_root.as_deref())
+                    .map_err(|diagnostics| render_diagnostics(&source, &diagnostics, json))?;
+                (compilation.semantic, compilation.advisories)
+            };
             println!(
                 "{}",
                 serde_json::to_string_pretty(&serde_json::json!({
@@ -85,8 +127,11 @@ fn run() -> Result<(), String> {
             );
         }
         "inspect" => {
-            let (semantic, _advisories) = elaborate_module(&module, &UnitRegistry::si_bootstrap())
-                .map_err(|diagnostics| render_diagnostics(&source, &diagnostics, json))?;
+            let (semantic, _advisories) = {
+                let compilation = elaborate(&source, module_root.as_deref())
+                    .map_err(|diagnostics| render_diagnostics(&source, &diagnostics, json))?;
+                (compilation.semantic, compilation.advisories)
+            };
             let models = module
                 .models
                 .iter()
@@ -125,8 +170,11 @@ fn run() -> Result<(), String> {
             );
         }
         "coupling" => {
-            let (semantic, _advisories) = elaborate_module(&module, &UnitRegistry::si_bootstrap())
-                .map_err(|diagnostics| render_diagnostics(&source, &diagnostics, json))?;
+            let (semantic, _advisories) = {
+                let compilation = elaborate(&source, module_root.as_deref())
+                    .map_err(|diagnostics| render_diagnostics(&source, &diagnostics, json))?;
+                (compilation.semantic, compilation.advisories)
+            };
             let semantic_model = select_model(&semantic, selector)?;
             let model = module
                 .models
@@ -142,8 +190,11 @@ fn run() -> Result<(), String> {
             );
         }
         "structural" => {
-            let (semantic, _advisories) = elaborate_module(&module, &UnitRegistry::si_bootstrap())
-                .map_err(|diagnostics| render_diagnostics(&source, &diagnostics, json))?;
+            let (semantic, _advisories) = {
+                let compilation = elaborate(&source, module_root.as_deref())
+                    .map_err(|diagnostics| render_diagnostics(&source, &diagnostics, json))?;
+                (compilation.semantic, compilation.advisories)
+            };
             let semantic_model = select_model(&semantic, selector)?;
             let model = module
                 .models
@@ -169,8 +220,11 @@ fn run() -> Result<(), String> {
             );
         }
         "explain" => {
-            let (semantic, _advisories) = elaborate_module(&module, &UnitRegistry::si_bootstrap())
-                .map_err(|diagnostics| render_diagnostics(&source, &diagnostics, json))?;
+            let (semantic, _advisories) = {
+                let compilation = elaborate(&source, module_root.as_deref())
+                    .map_err(|diagnostics| render_diagnostics(&source, &diagnostics, json))?;
+                (compilation.semantic, compilation.advisories)
+            };
             let (semantic_model, edge_selector) = select_explain(&semantic, selector, detail)?;
             let model = module
                 .models
@@ -199,8 +253,11 @@ fn run() -> Result<(), String> {
             );
         }
         "form" => {
-            let (semantic, _advisories) = elaborate_module(&module, &UnitRegistry::si_bootstrap())
-                .map_err(|diagnostics| render_diagnostics(&source, &diagnostics, json))?;
+            let (semantic, _advisories) = {
+                let compilation = elaborate(&source, module_root.as_deref())
+                    .map_err(|diagnostics| render_diagnostics(&source, &diagnostics, json))?;
+                (compilation.semantic, compilation.advisories)
+            };
             let (model, form_name) = select_model_item(&semantic, selector, "form")?;
             println!(
                 "{}",
@@ -212,8 +269,11 @@ fn run() -> Result<(), String> {
             );
         }
         "derive-form" => {
-            let (semantic, _advisories) = elaborate_module(&module, &UnitRegistry::si_bootstrap())
-                .map_err(|diagnostics| render_diagnostics(&source, &diagnostics, json))?;
+            let (semantic, _advisories) = {
+                let compilation = elaborate(&source, module_root.as_deref())
+                    .map_err(|diagnostics| render_diagnostics(&source, &diagnostics, json))?;
+                (compilation.semantic, compilation.advisories)
+            };
             let (model, equation_name) = select_model_item(&semantic, selector, "derive-form")?;
             println!(
                 "{}",
@@ -225,8 +285,11 @@ fn run() -> Result<(), String> {
             );
         }
         "requirements" => {
-            let (semantic, _advisories) = elaborate_module(&module, &UnitRegistry::si_bootstrap())
-                .map_err(|diagnostics| render_diagnostics(&source, &diagnostics, json))?;
+            let (semantic, _advisories) = {
+                let compilation = elaborate(&source, module_root.as_deref())
+                    .map_err(|diagnostics| render_diagnostics(&source, &diagnostics, json))?;
+                (compilation.semantic, compilation.advisories)
+            };
             let (model, form_name) = select_model_item(&semantic, selector, "requirements")?;
             let form = compile_variational_form(&semantic, &model.name, form_name)
                 .map_err(|error| error.to_string())?;
@@ -239,8 +302,11 @@ fn run() -> Result<(), String> {
             );
         }
         "derive-requirements" => {
-            let (semantic, _advisories) = elaborate_module(&module, &UnitRegistry::si_bootstrap())
-                .map_err(|diagnostics| render_diagnostics(&source, &diagnostics, json))?;
+            let (semantic, _advisories) = {
+                let compilation = elaborate(&source, module_root.as_deref())
+                    .map_err(|diagnostics| render_diagnostics(&source, &diagnostics, json))?;
+                (compilation.semantic, compilation.advisories)
+            };
             let (model, equation_name) =
                 select_model_item(&semantic, selector, "derive-requirements")?;
             let form = derive_variational_form(&semantic, &model.name, equation_name)
@@ -254,8 +320,11 @@ fn run() -> Result<(), String> {
             );
         }
         "operator" => {
-            let (semantic, _advisories) = elaborate_module(&module, &UnitRegistry::si_bootstrap())
-                .map_err(|diagnostics| render_diagnostics(&source, &diagnostics, json))?;
+            let (semantic, _advisories) = {
+                let compilation = elaborate(&source, module_root.as_deref())
+                    .map_err(|diagnostics| render_diagnostics(&source, &diagnostics, json))?;
+                (compilation.semantic, compilation.advisories)
+            };
             let (model, form_name) = select_model_item(&semantic, selector, "operator")?;
             let form = compile_variational_form(&semantic, &model.name, form_name)
                 .map_err(|error| error.to_string())?;
@@ -270,8 +339,11 @@ fn run() -> Result<(), String> {
             );
         }
         "derive-operator" => {
-            let (semantic, _advisories) = elaborate_module(&module, &UnitRegistry::si_bootstrap())
-                .map_err(|diagnostics| render_diagnostics(&source, &diagnostics, json))?;
+            let (semantic, _advisories) = {
+                let compilation = elaborate(&source, module_root.as_deref())
+                    .map_err(|diagnostics| render_diagnostics(&source, &diagnostics, json))?;
+                (compilation.semantic, compilation.advisories)
+            };
             let (model, equation_name) = select_model_item(&semantic, selector, "derive-operator")?;
             let form = derive_variational_form(&semantic, &model.name, equation_name)
                 .map_err(|error| error.to_string())?;
@@ -286,15 +358,18 @@ fn run() -> Result<(), String> {
             );
         }
         "elaborate" => {
-            let (semantic, _advisories) = elaborate_module(&module, &UnitRegistry::si_bootstrap())
-                .map_err(|diagnostics| render_diagnostics(&source, &diagnostics, json))?;
+            let (semantic, _advisories) = {
+                let compilation = elaborate(&source, module_root.as_deref())
+                    .map_err(|diagnostics| render_diagnostics(&source, &diagnostics, json))?;
+                (compilation.semantic, compilation.advisories)
+            };
             println!(
                 "{}",
                 serde_json::to_string_pretty(&semantic).map_err(|error| error.to_string())?
             );
         }
         "slots" => {
-            let compilation = compile_semantics(&source, &UnitRegistry::si_bootstrap())
+            let compilation = elaborate(&source, module_root.as_deref())
                 .map_err(|diagnostics| render_diagnostics(&source, &diagnostics, json))?;
             let manifests = derive_binding_slots(&compilation);
             if json {
@@ -317,7 +392,7 @@ fn run() -> Result<(), String> {
 }
 
 fn usage() -> String {
-    "usage: scientia <check|fmt|parse|elaborate|inspect|freeze|explain|coupling|structural|form|derive-form|requirements|derive-requirements|operator|derive-operator|slots> [--json] <model.res> [model|model:item] [detail]".into()
+    "usage: scientia <check|fmt|parse|elaborate|inspect|freeze|explain|coupling|structural|form|derive-form|requirements|derive-requirements|operator|derive-operator|slots> [--json] [--module-root <dir>] <model.res> [model|model:item] [detail]".into()
 }
 
 fn select_model<'a>(

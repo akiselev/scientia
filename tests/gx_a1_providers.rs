@@ -32,7 +32,7 @@ model Declared {
 
   source Q: VolumetricHeatSource;
   equation energy on Omega { -div(k * grad(T)) = Q; }
-  initial { T = exact_T(0); }
+  initial { T = exact_T(0 s); }
 }
 "#;
 
@@ -131,13 +131,15 @@ fn declared_provider_calls_elaborate_to_typed_provider_call_nodes() {
         provider_call.ty.shape,
         SemanticShape::Numeric(scientia::scientific::ValueShape::Scalar)
     ));
+    // GX-F3: the output kind now resolves through the `QuantityKindRegistry` (bare tail lookup),
+    // so it carries the registry's canonical namespaced id rather than the authored bare name.
     assert_eq!(
         provider_call
             .ty
             .quantity_kind
             .as_ref()
             .map(|kind| kind.as_str()),
-        Some("ThermalConductivity")
+        Some("si:ThermalConductivity")
     );
 }
 

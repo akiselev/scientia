@@ -122,7 +122,7 @@ model DeclaredProviders {
 
     source Q: VolumetricHeatSource;
     equation energy on Omega { -div(k * grad(T)) = Q; }
-    initial { T = exact_T(0); }
+    initial { T = exact_T(0 s); }
 }
 "#;
 

@@ -22,10 +22,10 @@
 //!   get a value kernel but no tangent kernel (contract C7 asks only for tangents "from symbolic
 //!   differentiation through the projection for `Symbolic`/`Automatic`").
 //! - A `Constant` model's unit-bearing literal (contract C7 point 4) canonicalizes to SI via the
-//!   passed-in Quantitas registry when it is a single bare-unit literal (`"300 K"`); a compound
-//!   unit expression (`"1.0 m^2/s"`) is outside the current `.res` expression grammar's unit
-//!   syntax (a pre-existing limit recorded in `GX-CONTRACTS.md` C11.1, not one this module adds)
-//!   and is refused with the existing `RESOLVE_UNKNOWN_UNIT`-shaped diagnostic.
+//!   passed-in Quantitas registry, both for a simple bare-unit literal (`"300 K"`) and, since
+//!   GX-F3 extended the `.res` expression grammar's trailing-unit rule to accept a compound unit
+//!   token sequence, for a compound unit expression (`"1.0 m^2/s"`); an unresolvable unit is
+//!   refused with `RESOLVE_UNKNOWN_UNIT`.
 
 use crate::id::{Digest, span_independent_digest};
 use crate::kernel::{self, KernelLoweringError};

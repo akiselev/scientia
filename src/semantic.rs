@@ -12,7 +12,9 @@ use crate::scientific::{
     ValueShape, canonicalize_authored_quantity,
 };
 use crate::source::{RelatedSpan, SourceDiagnostic, SourceSeverity, SourceSpan};
-use quantitas::{Dimension, QuantityKindId, QuantityLiteral, UnitId, UnitRegistry};
+use quantitas::{
+    Dimension, QuantityKindId, QuantityKindRegistry, QuantityLiteral, UnitId, UnitRegistry,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -121,18 +123,92 @@ pub struct SemanticCompilation {
     pub advisories: Vec<SourceDiagnostic>,
 }
 
-/// Parse and elaborate source through the complete FC1 boundary.
+/// The unit and quantity-kind registries an elaboration resolves declared units and quantity
+/// kinds against (GX-F3). Grouping them lets the elaboration entry points take one parameter
+/// instead of two, and lets a future registry addition extend this struct rather than every
+/// call site.
+#[derive(Clone, Copy)]
+pub struct Registries<'a> {
+    pub units: &'a UnitRegistry,
+    pub kinds: &'a QuantityKindRegistry,
+}
+
+impl<'a> Registries<'a> {
+    pub fn new(units: &'a UnitRegistry, kinds: &'a QuantityKindRegistry) -> Self {
+        Self { units, kinds }
+    }
+}
+
+/// Parse and elaborate `source` through the complete FC1 boundary against `registry`, using the
+/// SI quantity-kind bootstrap ([`QuantityKindRegistry::si_bootstrap`]) and refusing every `use`
+/// import ([`crate::scientific::NoImports`]).
+///
+/// This keeps its original two-argument signature (a thin wrapper over
+/// [`compile_semantics_with`]) so existing callers -- Finitum, Sinbad, and this crate's own
+/// tests -- keep compiling unchanged. A caller that needs a caller-supplied kind registry and/or
+/// cross-module provider resolution (contract GX-F4) should call [`compile_semantics_with`]
+/// directly.
 pub fn compile_semantics(
     source: &str,
     registry: &UnitRegistry,
 ) -> Result<SemanticCompilation, Vec<SourceDiagnostic>> {
+    let kinds = QuantityKindRegistry::si_bootstrap();
+    compile_semantics_with(
+        source,
+        Registries::new(registry, &kinds),
+        &crate::scientific::NoImports,
+    )
+}
+
+/// Parse and elaborate `source` against `registries`, resolving its `use` imports through
+/// `modules` (contract GX-F4). Imported modules contribute only `provider` declarations, from
+/// every model of every (transitively) imported module, into every model of the importing
+/// (root) module's scope; every other declaration kind stays module-local (contract C11.1's
+/// pre-existing limit is closed only for providers). A cross-module provider name collision is
+/// `RESOLVE_DUPLICATE_NAME` (both spans retained, the imported declaration reported first); an
+/// import cycle is `RESOLVE_IMPORT_CYCLE`; a `use` naming a module `modules` cannot load is
+/// `RESOLVE_MISSING_MODULE`.
+pub fn compile_semantics_with(
+    source: &str,
+    registries: Registries<'_>,
+    modules: &dyn crate::scientific::ModuleSource,
+) -> Result<SemanticCompilation, Vec<SourceDiagnostic>> {
     let parsed = crate::scientific::parse_scientific_module_diagnostics(source)?;
-    let (semantic, advisories) = elaborate_module(&parsed, registry)?;
+    let root_name = parsed.name.clone();
+    let resolved = crate::scientific::resolve_modules(parsed, modules)
+        .map_err(|error| vec![error.diagnostic()])?;
+    let root = resolved
+        .modules
+        .get(&root_name)
+        .expect("resolve_modules always retains the root module it was given")
+        .clone();
+    let imported = imported_providers(&root_name, &resolved);
+    let (semantic, advisories) = elaborate_module_with(&root, &imported, registries)?;
     Ok(SemanticCompilation {
-        source: parsed,
+        source: root,
         semantic,
         advisories,
     })
+}
+
+/// Every `provider` declared by a module other than `root_name`, from every model of that
+/// module, in deterministic (module name, then declaration order) order -- contract GX-F4's
+/// "other declaration kinds are NOT imported": only providers cross the module boundary.
+fn imported_providers<'a>(
+    root_name: &str,
+    resolved: &'a crate::scientific::ResolvedModules,
+) -> Vec<&'a ProviderDecl> {
+    resolved
+        .modules
+        .iter()
+        .filter(|(name, _)| name.as_str() != root_name)
+        .flat_map(|(_, module)| {
+            module
+                .models
+                .iter()
+                .flat_map(|model| model.providers.iter())
+        })
+        .collect()
 }
 
 /// One canonical, typed semantic arena for a source model.
@@ -176,8 +252,9 @@ pub struct SemanticProviderInput {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SemanticProviderOutput {
     pub quantity_kind: QuantityKindId,
-    /// `None` when the declared quantity kind has no known dimension in this compiler's
-    /// minimal kind table (see `known_kind_dimension`); arity/selector typing still applies.
+    /// `None` when the declared quantity kind is not registered in the elaboration's
+    /// [`QuantityKindRegistry`] (`RESOLVE_UNKNOWN_QUANTITY_KIND`, error severity inside a
+    /// provider signature); arity/selector typing still applies.
     pub dimension: Option<Dimension>,
     pub shape: ValueShape,
     pub unit: Option<UnitId>,
@@ -603,11 +680,23 @@ pub fn elaborate_module(
     module: &ScientificModule,
     registry: &UnitRegistry,
 ) -> Result<(SemanticModule, Vec<SourceDiagnostic>), Vec<SourceDiagnostic>> {
+    let kinds = QuantityKindRegistry::si_bootstrap();
+    elaborate_module_with(module, &[], Registries::new(registry, &kinds))
+}
+
+/// [`elaborate_module`] against a caller-supplied [`Registries`] and a set of `provider`
+/// declarations imported from other modules (contract GX-F4; see [`compile_semantics_with`]),
+/// shared by every model in `module` since a `use` import is declared once per module file.
+pub fn elaborate_module_with(
+    module: &ScientificModule,
+    imported_providers: &[&ProviderDecl],
+    registries: Registries<'_>,
+) -> Result<(SemanticModule, Vec<SourceDiagnostic>), Vec<SourceDiagnostic>> {
     let mut diagnostics = vec![];
     let models = module
         .models
         .iter()
-        .map(|model| Elaborator::new(model, registry).run(&mut diagnostics))
+        .map(|model| Elaborator::new(model, registries, imported_providers).run(&mut diagnostics))
         .collect();
     diagnostics.sort_by(|left, right| {
         (left.span.start, left.span.end, &left.code, &left.message).cmp(&(
@@ -643,6 +732,8 @@ pub fn semantic_arena_digest(module: &SemanticModule) -> String {
 struct Elaborator<'a> {
     source: &'a SourceModel,
     registry: &'a UnitRegistry,
+    kinds: &'a QuantityKindRegistry,
+    imported_providers: Vec<&'a ProviderDecl>,
     domains: Vec<SemanticDomain>,
     domain_names: BTreeMap<String, DomainId>,
     regions: Vec<SemanticRegion>,
@@ -656,10 +747,16 @@ struct Elaborator<'a> {
 }
 
 impl<'a> Elaborator<'a> {
-    fn new(source: &'a SourceModel, registry: &'a UnitRegistry) -> Self {
+    fn new(
+        source: &'a SourceModel,
+        registries: Registries<'a>,
+        imported_providers: &[&'a ProviderDecl],
+    ) -> Self {
         Self {
             source,
-            registry,
+            registry: registries.units,
+            kinds: registries.kinds,
+            imported_providers: imported_providers.to_vec(),
             domains: vec![],
             domain_names: BTreeMap::new(),
             regions: vec![],
@@ -738,80 +835,106 @@ impl<'a> Elaborator<'a> {
         }
     }
 
+    /// Declares every provider in scope for this model: first providers imported from other
+    /// modules (contract GX-F4, "first" so a local re-declaration of the same name reports as a
+    /// duplicate against the imported one), then this model's own `provider` declarations.
     fn declare_providers(&mut self, diagnostics: &mut Vec<SourceDiagnostic>) {
+        for provider in self.imported_providers.clone() {
+            self.declare_one_provider(provider, diagnostics);
+        }
         for provider in &self.source.providers {
-            if let Some(previous) = self.provider_names.get(&provider.name).copied() {
-                diagnostics.push(duplicate(
-                    "provider",
-                    &provider.name,
-                    provider.span,
-                    self.providers[previous.index()].span,
-                ));
-                continue;
-            }
-            if is_intrinsic_call(&provider.name) {
-                diagnostics.push(error(
-                    "RESOLVE_DUPLICATE_NAME",
-                    format!(
-                        "provider `{}` cannot reuse the reserved intrinsic function name",
-                        provider.name
-                    ),
-                    provider.span,
-                ));
-                continue;
-            }
-            let inputs = provider
-                .inputs
-                .iter()
-                .map(|input| match &input.kind {
-                    None => SemanticProviderInput {
+            self.declare_one_provider(provider, diagnostics);
+        }
+    }
+
+    fn declare_one_provider(
+        &mut self,
+        provider: &ProviderDecl,
+        diagnostics: &mut Vec<SourceDiagnostic>,
+    ) {
+        if let Some(previous) = self.provider_names.get(&provider.name).copied() {
+            diagnostics.push(duplicate(
+                "provider",
+                &provider.name,
+                provider.span,
+                self.providers[previous.index()].span,
+            ));
+            return;
+        }
+        if is_intrinsic_call(&provider.name) {
+            diagnostics.push(error(
+                "RESOLVE_DUPLICATE_NAME",
+                format!(
+                    "provider `{}` cannot reuse the reserved intrinsic function name",
+                    provider.name
+                ),
+                provider.span,
+            ));
+            return;
+        }
+        let inputs = provider
+            .inputs
+            .iter()
+            .map(|input| match &input.kind {
+                None => SemanticProviderInput {
+                    name: input.name.clone(),
+                    quantity_kind: None,
+                    dimension: None,
+                    shape: ValueShape::Scalar,
+                    span: input.span,
+                },
+                Some(kind_name) => {
+                    let (quantity_kind, dimension) = match self.kinds.by_name(kind_name) {
+                        Some(definition) => {
+                            (Some(definition.id.clone()), Some(definition.dimension))
+                        }
+                        None => {
+                            diagnostics.push(error(
+                                "RESOLVE_UNKNOWN_QUANTITY_KIND",
+                                format!("unknown quantity kind `{kind_name}`"),
+                                input.kind_span,
+                            ));
+                            (Some(QuantityKindId::new(kind_name.clone())), None)
+                        }
+                    };
+                    SemanticProviderInput {
                         name: input.name.clone(),
-                        quantity_kind: None,
-                        dimension: None,
+                        quantity_kind,
+                        dimension,
                         shape: ValueShape::Scalar,
                         span: input.span,
-                    },
-                    Some(kind_name) => {
-                        let kind = QuantityKindId::new(kind_name.clone());
-                        let dimension = known_kind_dimension(&kind);
-                        SemanticProviderInput {
-                            name: input.name.clone(),
-                            quantity_kind: Some(kind),
-                            dimension,
-                            shape: ValueShape::Scalar,
-                            span: input.span,
-                        }
                     }
-                })
-                .collect::<Vec<_>>();
-            let declared_output_kind = QuantityKindId::new(provider.output_kind.clone());
-            let (output_dimension, canonical_output_kind) = self.declared_quantity_type(
-                Some(&declared_output_kind),
-                Some(provider.output_kind_span),
-                provider.unit.as_ref(),
-                provider.unit_span,
-                diagnostics,
-            );
-            let output = SemanticProviderOutput {
-                quantity_kind: canonical_output_kind.unwrap_or(declared_output_kind),
-                dimension: output_dimension,
-                shape: provider.shape.clone(),
-                unit: provider.unit.clone(),
-            };
-            let domain = self.provider_domain(provider, &inputs, diagnostics);
-            let id = ProviderId(self.providers.len() as u32);
-            self.provider_names.insert(provider.name.clone(), id);
-            self.providers.push(SemanticProvider {
-                id,
-                name: provider.name.clone(),
-                inputs,
-                output,
-                locality: provider.locality.clone(),
-                differentiability: provider.differentiability.clone(),
-                domain,
-                span: provider.span,
-            });
-        }
+                }
+            })
+            .collect::<Vec<_>>();
+        let declared_output_kind = QuantityKindId::new(provider.output_kind.clone());
+        let (output_dimension, canonical_output_kind) = self.declared_quantity_type(
+            Some(&declared_output_kind),
+            Some(provider.output_kind_span),
+            provider.unit.as_ref(),
+            provider.unit_span,
+            KindSeverity::Error,
+            diagnostics,
+        );
+        let output = SemanticProviderOutput {
+            quantity_kind: canonical_output_kind.unwrap_or(declared_output_kind),
+            dimension: output_dimension,
+            shape: provider.shape.clone(),
+            unit: provider.unit.clone(),
+        };
+        let domain = self.provider_domain(provider, &inputs, diagnostics);
+        let id = ProviderId(self.providers.len() as u32);
+        self.provider_names.insert(provider.name.clone(), id);
+        self.providers.push(SemanticProvider {
+            id,
+            name: provider.name.clone(),
+            inputs,
+            output,
+            locality: provider.locality.clone(),
+            differentiability: provider.differentiability.clone(),
+            domain,
+            span: provider.span,
+        });
     }
 
     /// Canonicalize each `domain { input in [lo, hi]; }` bound into an SI-valued `InputBounds`,
@@ -1049,10 +1172,25 @@ impl<'a> Elaborator<'a> {
             value.quantity_kind_span,
             value.unit.as_ref(),
             value.unit_span,
+            KindSeverity::Advisory,
             diagnostics,
         );
-        let mut ty = if matches!(role, SemanticRole::Source) && dimension.is_none() {
-            SemanticType::deferred(role)
+        let mut ty = if matches!(role, SemanticRole::Source) {
+            // A `source` declaration has no shape syntax in the `.res` grammar -- GX-F3 does not
+            // add one -- so its physical shape (scalar, vector, tensor) is never actually
+            // knowable from the declaration alone; `Deferred` keeps every downstream shape check
+            // permissive for it, exactly as it did before kind resolution existed (when almost
+            // every kind was unresolvable and this branch triggered unconditionally through the
+            // old `dimension.is_none()` gate). Its *dimension*, unlike `SemanticType::deferred`'s
+            // usual `None`, is kept here: GX-F3's kind registry now resolves many more kinds,
+            // including inherently vector/tensor-shaped ones (`MechanicalBodyForce`,
+            // `Magnetization`, ...), so gating this branch on "dimension unknown" would silently
+            // start giving those a wrong `Numeric(Scalar)` shape wherever the registry happens to
+            // know their dimension -- exactly the failure this crate's own tests caught in
+            // `13-mixed-darcy.res`, `34-magnetostatics.res`, and the FC8 elasticity fixture.
+            let mut deferred = SemanticType::deferred(role);
+            deferred.dimension = dimension;
+            deferred
         } else {
             SemanticType::numeric(ValueShape::Scalar, dimension, Frame::Neutral, role)
         };
@@ -1072,6 +1210,7 @@ impl<'a> Elaborator<'a> {
             field.quantity_kind_span,
             field.unit.as_ref(),
             field.unit_span,
+            KindSeverity::Advisory,
             diagnostics,
         );
         for literal in [&field.nominal, &field.physical_min, &field.physical_max]
@@ -1089,8 +1228,7 @@ impl<'a> Elaborator<'a> {
                     .literal_dimension(literal)
                     .is_some_and(|actual| actual != expected)
             {
-                diagnostics.push(error(
-                    "TYPE_DIMENSION_MISMATCH",
+                diagnostics.push(dimension_mismatch(
                     format!(
                         "quantity literal for field `{}` has an incompatible dimension",
                         field.name
@@ -1122,57 +1260,177 @@ impl<'a> Elaborator<'a> {
         ty
     }
 
+    /// Resolves a declared quantity-kind name and unit token against the kind and unit
+    /// registries (GX-F3, replacing the old five-kind `known_kind_dimension` table).
+    ///
+    /// `unit` may be a simple registered unit id/symbol or a compound unit expression such as
+    /// `W/(m*K)`, resolved through [`UnitRegistry::parse_unit_expression`]; either shape that
+    /// fails to resolve is `RESOLVE_UNKNOWN_UNIT` (always error -- a genuinely unresolvable unit
+    /// is a hard authoring mistake, not a registry-coverage gap). An unresolvable `kind` is
+    /// `RESOLVE_UNKNOWN_QUANTITY_KIND` at `kind_severity`: error inside a provider signature
+    /// (contract C1.3), advisory on a `source`/`field`/`parameter` `quantity =`/`: Kind`
+    /// attribute so the corpus keeps elaborating until GX-F5 gives every authored kind a
+    /// registry entry or a corrected spelling. When both a kind and a unit resolve, their
+    /// dimensions must agree (`RESOLVE_UNIT_KIND_MISMATCH`, always error: this compares two
+    /// successfully resolved identities, so a mismatch is a genuine authored inconsistency, not
+    /// a missing registry entry).
     fn declared_quantity_type(
         &self,
         kind: Option<&QuantityKindId>,
         kind_span: Option<SourceSpan>,
         unit: Option<&UnitId>,
         unit_span: Option<SourceSpan>,
+        kind_severity: KindSeverity,
         diagnostics: &mut Vec<SourceDiagnostic>,
     ) -> (Option<Dimension>, Option<QuantityKindId>) {
-        let definition = unit.and_then(|unit| {
+        let kind_def = kind.and_then(|kind| self.kinds.by_name(kind.as_str()));
+        if let Some(kind) = kind
+            && kind_def.is_none()
+        {
+            let message = format!("unknown quantity kind `{kind}`");
+            let span = kind_span.unwrap_or_default();
+            diagnostics.push(match kind_severity {
+                KindSeverity::Error => error("RESOLVE_UNKNOWN_QUANTITY_KIND", message, span),
+                KindSeverity::Advisory => advisory("RESOLVE_UNKNOWN_QUANTITY_KIND", message, span),
+            });
+        }
+        let simple_unit = unit.and_then(|unit| {
             self.registry
                 .get(unit)
                 .or_else(|| self.registry.by_symbol(unit.as_str()))
-                .or_else(|| {
-                    diagnostics.push(error(
-                        "RESOLVE_UNKNOWN_UNIT",
-                        format!("unknown unit `{unit}`"),
-                        unit_span.unwrap_or_default(),
-                    ));
-                    None
-                })
         });
-        let mut canonical_kind = kind.cloned();
-        if let (Some(kind), Some(definition)) = (kind, definition) {
-            if known_kind_dimension(kind).is_some_and(|expected| expected != definition.dimension) {
-                diagnostics.push(error(
-                    "RESOLVE_UNIT_KIND_MISMATCH",
-                    format!(
-                        "unit `{}` has dimension `{}`, which is incompatible with quantity kind `{kind}`",
-                        definition.symbol, definition.dimension
-                    ),
-                    kind_span.or(unit_span).unwrap_or_default(),
-                ));
-            }
+        let compound_unit = if simple_unit.is_none() {
+            unit.and_then(|unit| self.registry.parse_unit_expression(unit.as_str()).ok())
+        } else {
+            None
+        };
+        if let Some(unit) = unit
+            && simple_unit.is_none()
+            && compound_unit.is_none()
+        {
+            diagnostics.push(error(
+                "RESOLVE_UNKNOWN_UNIT",
+                format!("unknown unit `{unit}`"),
+                unit_span.unwrap_or_default(),
+            ));
+        }
+        let unit_dimension = simple_unit
+            .map(|definition| definition.dimension)
+            .or_else(|| compound_unit.map(|expression| expression.dimension));
+        if let (Some(kind_def), Some(unit_dimension)) = (kind_def, unit_dimension)
+            && kind_def.dimension != unit_dimension
+        {
+            diagnostics.push(error(
+                "RESOLVE_UNIT_KIND_MISMATCH",
+                format!(
+                    "unit has dimension `{unit_dimension}`, which is incompatible with quantity kind `{}`",
+                    kind_def.id
+                ),
+                kind_span.or(unit_span).unwrap_or_default(),
+            ));
+        }
+        let dimension = unit_dimension.or_else(|| kind_def.map(|definition| definition.dimension));
+        let canonical_kind = kind_def
+            .map(|definition| definition.id.clone())
+            .or_else(|| kind.cloned());
+        (dimension, canonical_kind)
+    }
+
+    /// Canonicalizes a unit-bearing numeric literal to SI during elaboration (contract GX-F3
+    /// item 4): `authored` is the parser's unit token text -- a simple registered symbol/id such
+    /// as `K`, or a compound expression such as `W/(m*K)`/`m^2/s` produced by the expression
+    /// grammar's extended trailing-unit rule (`Parser::trailing_unit_chain`). Returns the
+    /// canonical unit id (kept for provenance/display only: the scaling below is already
+    /// reflected in the returned value, so every consumer of `SemanticExprKind::Number` can read
+    /// `value` directly regardless of `unit`), the resolved dimension, the SI-scaled value, and
+    /// its exact literal identity. On an unresolvable unit, the literal's authored `value`/`unit`
+    /// pass through unscaled (alongside a `RESOLVE_UNKNOWN_UNIT` diagnostic) so elaboration can
+    /// still build an arena for its diagnostics.
+    ///
+    /// A simple registered unit picks the kind for the underlying Quantitas `canonicalize` call
+    /// from the unit's own first admitted kind (falling back to the `scientia:Unspecified`
+    /// sentinel this crate already uses for kind-agnostic literals elsewhere, e.g.
+    /// `property_kernel::canonicalize_constant_units`) rather than any quantity kind declared
+    /// elsewhere in the model: a bare literal inside a general expression has no reliable kind
+    /// context to thread through arbitrary sub-expressions, and every admitted kind of a
+    /// bootstrap unit shares that unit's `scale_to_si`/`offset_to_si` (an affine unit such as
+    /// `degC` only ever admits one kind per affine/interval pairing in the bootstrap), so the
+    /// choice never changes the resulting SI value -- only which kind Quantitas is asked to
+    /// validate the literal against.
+    ///
+    /// Exactness: Quantitas's `ExactScale` (the unit registry's conversion factor) exposes only
+    /// `as_f64()`, not its rational numerator/denominator/power10, so this crate cannot combine
+    /// it with `ExactLiteral`'s own exact rational to keep a scaled literal exact. The scaled
+    /// `exact` is therefore synthesized from the SI `f64` via `ExactLiteral::from_value` -- the
+    /// same best-effort, non-spelling-exact path already used for the `pi` intrinsic and for a
+    /// Resolvent-produced rational (contract C11.6). If a future Quantitas package exposes
+    /// `ExactScale`'s rational components, this can become exact for the common case of an
+    /// integer/decimal scale.
+    fn canonicalize_number_literal(
+        &self,
+        value: f64,
+        authored: &str,
+        lexeme: &str,
+        span: SourceSpan,
+        diagnostics: &mut Vec<SourceDiagnostic>,
+    ) -> (Option<UnitId>, Option<Dimension>, f64, ExactLiteral) {
+        if let Some(definition) = self
+            .registry
+            .get(&UnitId::new(authored))
+            .or_else(|| self.registry.by_symbol(authored))
+        {
+            let kind = definition
+                .admitted_kinds
+                .first()
+                .cloned()
+                .unwrap_or_else(|| QuantityKindId::new("scientia:Unspecified"));
             let literal = QuantityLiteral {
-                value: 0.0,
+                value,
                 unit: definition.id.clone(),
-                kind: kind.clone(),
+                kind,
             };
-            match canonicalize_authored_quantity(self.registry, &literal) {
-                Ok(quantity) => canonical_kind = Some(quantity.kind().clone()),
-                Err(error_value) => diagnostics.push(error(
-                    "RESOLVE_UNIT_KIND_MISMATCH",
-                    error_value.to_string(),
-                    kind_span.or(unit_span).unwrap_or_default(),
-                )),
+            return match canonicalize_authored_quantity(self.registry, &literal) {
+                Ok(quantity) => (
+                    Some(definition.id.clone()),
+                    Some(quantity.dimension()),
+                    quantity.value_si(),
+                    ExactLiteral::from_value(quantity.value_si()),
+                ),
+                Err(error_value) => {
+                    diagnostics.push(error("RESOLVE_UNKNOWN_UNIT", error_value.to_string(), span));
+                    (
+                        Some(UnitId::new(authored)),
+                        None,
+                        value,
+                        ExactLiteral::from_lexeme(lexeme),
+                    )
+                }
+            };
+        }
+        match self.registry.parse_unit_expression(authored) {
+            Ok(expression) => {
+                let value_si = value * expression.scale.as_f64();
+                (
+                    Some(UnitId::new(expression.rendering)),
+                    Some(expression.dimension),
+                    value_si,
+                    ExactLiteral::from_value(value_si),
+                )
+            }
+            Err(_) => {
+                diagnostics.push(error(
+                    "RESOLVE_UNKNOWN_UNIT",
+                    format!("unknown unit `{authored}`"),
+                    span,
+                ));
+                (
+                    Some(UnitId::new(authored)),
+                    None,
+                    value,
+                    ExactLiteral::from_lexeme(lexeme),
+                )
             }
         }
-        let dimension = definition
-            .map(|definition| definition.dimension)
-            .or_else(|| kind.and_then(known_kind_dimension));
-        (dimension, canonical_kind)
     }
 
     fn validate_literal(
@@ -1548,32 +1806,21 @@ impl<'a> Elaborator<'a> {
                 unit,
                 span,
             } => {
-                let (unit_id, dimension) = if let Some(authored) = unit {
-                    match self
-                        .registry
-                        .by_symbol(authored)
-                        .or_else(|| self.registry.get(&UnitId::new(authored)))
-                    {
-                        Some(definition) => {
-                            (Some(definition.id.clone()), Some(definition.dimension))
-                        }
-                        None => {
-                            diagnostics.push(error(
-                                "RESOLVE_UNKNOWN_UNIT",
-                                format!("unknown unit `{authored}`"),
-                                *span,
-                            ));
-                            (Some(UnitId::new(authored)), None)
-                        }
-                    }
+                let (unit_id, dimension, si_value, exact) = if let Some(authored) = unit {
+                    self.canonicalize_number_literal(*value, authored, lexeme, *span, diagnostics)
                 } else {
-                    (None, Some(Dimension::DIMENSIONLESS))
+                    (
+                        None,
+                        Some(Dimension::DIMENSIONLESS),
+                        *value,
+                        ExactLiteral::from_lexeme(lexeme),
+                    )
                 };
                 (
                     SemanticExprKind::Number {
-                        value: *value,
+                        value: si_value,
                         unit: unit_id,
-                        exact: ExactLiteral::from_lexeme(lexeme),
+                        exact,
                     },
                     SemanticType::numeric(
                         ValueShape::Scalar,
@@ -2528,12 +2775,13 @@ fn validate_shape(shape: &ValueShape, span: SourceSpan, diagnostics: &mut Vec<So
     }
 }
 
-fn known_kind_dimension(kind: &QuantityKindId) -> Option<Dimension> {
-    match kind.as_str().rsplit(':').next().unwrap_or_default() {
-        "ThermodynamicTemperature" | "TemperatureDifference" => Some(Dimension::TEMPERATURE),
-        "Dimensionless" => Some(Dimension::DIMENSIONLESS),
-        _ => None,
-    }
+/// Severity for `RESOLVE_UNKNOWN_QUANTITY_KIND` at one [`Elaborator::declared_quantity_type`]
+/// call site (contract GX-F3 item 2): error inside a provider signature, advisory on a
+/// `source`/`field`/`parameter` kind attribute.
+#[derive(Clone, Copy)]
+enum KindSeverity {
+    Error,
+    Advisory,
 }
 
 fn contraction_type(
@@ -2663,11 +2911,7 @@ fn require_scalar_dimensionless(
         .dimension
         .is_some_and(|dimension| !dimension.is_dimensionless())
     {
-        diagnostics.push(error(
-            "TYPE_DIMENSION_MISMATCH",
-            "expected a dimensionless value",
-            span,
-        ));
+        diagnostics.push(dimension_mismatch("expected a dimensionless value", span));
     }
 }
 
@@ -2770,8 +3014,7 @@ fn check_dimension_compatibility(
     if let (Some(left), Some(right)) = (left.dimension, right.dimension)
         && left != right
     {
-        diagnostics.push(error(
-            "TYPE_DIMENSION_MISMATCH",
+        diagnostics.push(dimension_mismatch(
             format!("incompatible dimensions `{left}` and `{right}`"),
             span,
         ));
@@ -2816,6 +3059,24 @@ fn error(code: &'static str, message: impl Into<String>, span: SourceSpan) -> So
 /// fail `elaborate_module`/`compile_semantics`; see `SemanticCompilation::advisories`.
 fn advisory(code: &'static str, message: impl Into<String>, span: SourceSpan) -> SourceDiagnostic {
     SourceDiagnostic::warning(code, message, span).phase("elaboration")
+}
+
+/// `TYPE_DIMENSION_MISMATCH`, temporarily advisory rather than error (GX-F3, until GX-F5).
+///
+/// Kind resolution (GX-F3 items 1-2) now supplies real dimensions for most symbols instead of
+/// the old five-kind `known_kind_dimension` table's near-universal `None`, so this diagnostic --
+/// unchanged in *logic* -- can genuinely fire wherever a corpus expression's authored units/kinds
+/// are not dimensionally consistent, which was previously invisible. (Note: `declare_value`'s
+/// `Source` branch separately keeps a `source` declaration's *shape* `Deferred` regardless of
+/// whether its dimension resolves, which is what actually keeps every one of the 50 Sinbad
+/// corpus models elaborating today -- see that function's comment. This diagnostic's severity is
+/// downgraded independently, as explicitly directed, so a genuine *dimensional* inconsistency
+/// that GX-F5 has not yet corrected also cannot regress corpus elaboration.) GX-F5 is the
+/// package that corrects the Sinbad corpus itself; until it lands, every `TYPE_DIMENSION_MISMATCH`
+/// site downgrades to advisory. Do not weaken the comparison this guards -- only its severity is
+/// temporary. Restore this to `error` (or delete it and call `error` directly) once GX-F5 lands.
+fn dimension_mismatch(message: impl Into<String>, span: SourceSpan) -> SourceDiagnostic {
+    advisory("TYPE_DIMENSION_MISMATCH", message, span)
 }
 
 /// Function names dispatched to a fixed intrinsic meaning by `call_type`/`call_kind`. A

@@ -426,14 +426,10 @@ pub(crate) fn lower_expr(
         )));
     }
     Ok(match &expression.kind {
-        SemanticExprKind::Number {
-            value, unit: None, ..
-        } => ScalarExpr::Constant(*value),
-        SemanticExprKind::Number { unit: Some(_), .. } => {
-            return Err(KernelLoweringError::UnsupportedExpression(
-                "unit-bearing literal before numeric canonicalization".into(),
-            ));
-        }
+        // GX-F3: elaboration canonicalizes every unit-bearing literal to SI (see
+        // `semantic::Elaborator::canonicalize_number_literal`), so `value` is already correctly
+        // scaled regardless of `unit`.
+        SemanticExprKind::Number { value, .. } => ScalarExpr::Constant(*value),
         SemanticExprKind::Symbol { symbol } => ScalarExpr::Load(
             *bindings
                 .get(symbol)

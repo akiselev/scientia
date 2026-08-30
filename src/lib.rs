@@ -88,21 +88,23 @@ pub use requirements::{
     SpaceSystemRequirement, TraceMapping, TraceRequirement, infer_form_requirements,
 };
 pub use scientific::{
-    CouplingGraph, DerivativeContract, Expr, PropertyBranch, PropertyDefinition, PropertyDomain,
-    PropertyEvidence, PropertyInput, PropertyLocality, PropertyModel, PropertyOutput,
-    PropertyProviderRef, PropertySignature, PropertyTable, ProviderDecl, ProviderDomainBound,
-    ProviderInputDecl, ScientificError, ScientificModel, ScientificModule, TableDerivativePolicy,
-    TimeStateSemantics, canonicalize_authored_quantity, derive_coupling_graph,
-    format_scientific_module, parse_expression, parse_scientific_module,
-    parse_scientific_module_diagnostics, resolve_modules, semantic_digest, validate_quantities,
+    CouplingGraph, DerivativeContract, Expr, FilesystemModuleSource, ModuleSource, NoImports,
+    PropertyBranch, PropertyDefinition, PropertyDomain, PropertyEvidence, PropertyInput,
+    PropertyLocality, PropertyModel, PropertyOutput, PropertyProviderRef, PropertySignature,
+    PropertyTable, ProviderDecl, ProviderDomainBound, ProviderInputDecl, ResolvedModules,
+    ScientificError, ScientificModel, ScientificModule, TableDerivativePolicy, TimeStateSemantics,
+    canonicalize_authored_quantity, derive_coupling_graph, format_scientific_module,
+    parse_expression, parse_scientific_module, parse_scientific_module_diagnostics,
+    resolve_modules, semantic_digest, validate_quantities,
 };
 pub use semantic::{
     Axis, AxisContraction, DeclarationId, DifferentialOperator, DomainId, ExactLiteral, ExprId,
-    Frame, ProviderId, RegionId, RegionKind, SemanticCompilation, SemanticDeclaration,
+    Frame, ProviderId, RegionId, RegionKind, Registries, SemanticCompilation, SemanticDeclaration,
     SemanticDeclarationKind, SemanticDomain, SemanticExpr, SemanticExprKind, SemanticIntegral,
     SemanticMeasure, SemanticModel, SemanticModule, SemanticProvider, SemanticProviderInput,
     SemanticProviderOutput, SemanticRegion, SemanticRole, SemanticShape, SemanticSymbol,
-    SemanticType, SymbolId, TraceSide, compile_semantics, elaborate_module, semantic_arena_digest,
+    SemanticType, SymbolId, TraceSide, compile_semantics, compile_semantics_with, elaborate_module,
+    elaborate_module_with, semantic_arena_digest,
 };
 pub use source::{RelatedSpan, SourceDiagnostic, SourceSeverity, SourceSpan, Spanned};
 pub use structural::scc::{Digraph, GraphError, Sccs, tarjan_scc};

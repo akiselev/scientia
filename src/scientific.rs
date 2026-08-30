@@ -957,8 +957,8 @@ impl Parser {
                         }
                     }
                     "unit" => {
-                        if let Some((name, span)) = self.expect_ident_value() {
-                            unit = Some(UnitId::new(name));
+                        if let Some((text, span)) = self.unit_expr() {
+                            unit = Some(UnitId::new(text));
                             unit_span = Some(span);
                         }
                     }
@@ -1235,25 +1235,53 @@ impl Parser {
         })
     }
 
-    /// A minimal product/quotient unit-symbol grammar (`W/(m*K)`): atoms are identifiers or a
-    /// parenthesized sub-expression, combined left to right with `*`/`/`. The result is not
-    /// dimensionally evaluated here; it becomes the literal `UnitId` symbol resolved later
-    /// against the registry, exactly like a simple `unit = K;` symbol.
+    /// A product/quotient/power unit-symbol grammar (`W/(m*K)`, `m^2/s`), mirroring
+    /// `quantitas::UnitRegistry::parse_unit_expression`'s `expr := term (('*'|'/') term)*`,
+    /// `term := primary ('^' '-'? DIGITS)?`, `primary := IDENT | '(' expr ')'`. The result is not
+    /// dimensionally evaluated here; it becomes the literal `UnitId` symbol text resolved later
+    /// (either directly or, for a compound expression, through `parse_unit_expression`) against
+    /// the registry, exactly like a simple `unit = K;` symbol.
     fn unit_expr(&mut self) -> Option<(String, SourceSpan)> {
-        let (mut text, mut span) = self.unit_atom()?;
+        let (mut text, mut span) = self.unit_term()?;
         loop {
             if self.eat_op("*") {
-                let (rhs, rhs_span) = self.unit_atom()?;
+                let (rhs, rhs_span) = self.unit_term()?;
                 text.push('*');
                 text.push_str(&rhs);
                 span = SourceSpan::new(span.start, rhs_span.end);
             } else if self.eat_op("/") {
-                let (rhs, rhs_span) = self.unit_atom()?;
+                let (rhs, rhs_span) = self.unit_term()?;
                 text.push('/');
                 text.push_str(&rhs);
                 span = SourceSpan::new(span.start, rhs_span.end);
             } else {
                 break;
+            }
+        }
+        Some((text, span))
+    }
+
+    /// A unit atom with an optional integer exponent (`m^2`, `s^-1`).
+    fn unit_term(&mut self) -> Option<(String, SourceSpan)> {
+        let (mut text, mut span) = self.unit_atom()?;
+        if self.eat_op("^") {
+            let negative = self.eat_op("-");
+            let exponent_token = self.bump();
+            match exponent_token.kind {
+                TokenKind::Number(value, _) if value.fract() == 0.0 => {
+                    text.push('^');
+                    if negative {
+                        text.push('-');
+                    }
+                    text.push_str(&(value as i64).to_string());
+                    span = SourceSpan::new(span.start, exponent_token.span.end);
+                }
+                _ => {
+                    self.errors.push(ScientificError::Syntax {
+                        message: "expected an integer unit exponent".into(),
+                        span: exponent_token.span,
+                    });
+                }
             }
         }
         Some((text, span))
@@ -1270,6 +1298,48 @@ impl Parser {
         } else {
             self.expect_ident_value()
         }
+    }
+
+    /// Non-erroring continuation of a numeric literal's trailing-unit chain (contract GX-F3
+    /// item 4): starting from an already-parsed first unit term (`text`, ending at `end`), keep
+    /// extending through `*`/`/` **only** when the token immediately following the operator can
+    /// itself start a unit atom (an identifier or `(`); anything else -- a number, a closing
+    /// token, end of input -- leaves that operator for the surrounding expression grammar
+    /// instead of erroring. This is what makes `2.5 W/(m*K)` and `1.0 m^2/s` single literals
+    /// while `300 K / 2` and `2.5 W / rho` still divide by a following number or bare symbol.
+    ///
+    /// Known trade-off: because this is a syntactic, registry-free rule, `2.5 W / rho` (a plain
+    /// identifier, not a number, immediately after an already unit-bearing literal) is
+    /// indistinguishable at parse time from a genuine compound unit and is swallowed into the
+    /// literal's unit text -- exactly as the pre-existing single-trailing-ident rule already
+    /// swallowed a lone identifier directly after a number. A mis-swallowed unit surfaces at
+    /// elaboration as `RESOLVE_UNKNOWN_UNIT` rather than silently succeeding, so this is a
+    /// compile error rather than a silent semantic change for any model that hits it.
+    fn trailing_unit_chain(&mut self, mut text: String, mut end: usize) -> (String, usize) {
+        loop {
+            let is_chain_op =
+                matches!(&self.token().kind, TokenKind::Op(op) if op == "*" || op == "/");
+            if !is_chain_op {
+                break;
+            }
+            let continues = matches!(
+                self.tokens.get(self.i + 1).map(|token| &token.kind),
+                Some(TokenKind::Ident(_)) | Some(TokenKind::Punct('('))
+            );
+            if !continues {
+                break;
+            }
+            let TokenKind::Op(op) = self.bump().kind else {
+                unreachable!("matched TokenKind::Op above")
+            };
+            let Some((atom_text, atom_span)) = self.unit_term() else {
+                break;
+            };
+            text.push_str(&op);
+            text.push_str(&atom_text);
+            end = atom_span.end;
+        }
+        (text, end)
     }
 
     fn provider_shape(&mut self) -> ValueShape {
@@ -1470,11 +1540,13 @@ impl Parser {
                 span: number_span,
             } => {
                 let (unit, end) = if matches!(self.token().kind, TokenKind::Ident(_)) {
-                    let token = self.bump();
-                    let TokenKind::Ident(unit) = token.kind else {
-                        unreachable!()
-                    };
-                    (Some(unit), token.span.end)
+                    match self.unit_term() {
+                        Some((first_text, first_span)) => {
+                            let (text, end) = self.trailing_unit_chain(first_text, first_span.end);
+                            (Some(text), end)
+                        }
+                        None => (None, number_span.end),
+                    }
                 } else {
                     (None, number_span.end)
                 };
@@ -2109,6 +2181,32 @@ impl ModuleSource for BTreeMap<String, String> {
     }
 }
 
+/// A [`ModuleSource`] that refuses every `use` import (contract GX-F4): `load` always returns
+/// `None`, so `resolve_modules` reports `RESOLVE_MISSING_MODULE` for any model that declares an
+/// import. Hermetic callers (this crate's own tests, and any caller with no module root) pass
+/// this so a model with no `use` statements still elaborates -- `resolve_modules` only calls
+/// `load` for a declared import, never unconditionally.
+pub struct NoImports;
+impl ModuleSource for NoImports {
+    fn load(&self, _name: &str) -> Option<String> {
+        None
+    }
+}
+
+/// A [`ModuleSource`] that maps a dotted module name to a `.res` file under `root` (contract
+/// GX-F4): `use physics.providers.thermal;` loads `<root>/physics/providers/thermal.res`. A
+/// missing or unreadable file is treated as a missing module (`None`), which `resolve_modules`
+/// reports as `RESOLVE_MISSING_MODULE`.
+pub struct FilesystemModuleSource {
+    pub root: std::path::PathBuf,
+}
+impl ModuleSource for FilesystemModuleSource {
+    fn load(&self, name: &str) -> Option<String> {
+        let relative = format!("{}.res", name.replace('.', "/"));
+        std::fs::read_to_string(self.root.join(relative)).ok()
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ResolvedModules {
     pub modules: BTreeMap<String, ScientificModule>,
@@ -2117,12 +2215,12 @@ pub struct ResolvedModules {
 
 pub fn resolve_modules(
     root: ScientificModule,
-    source: &impl ModuleSource,
+    source: &(impl ModuleSource + ?Sized),
 ) -> Result<ResolvedModules, ScientificError> {
     fn visit(
         name: &str,
         module: ScientificModule,
-        source: &impl ModuleSource,
+        source: &(impl ModuleSource + ?Sized),
         state: &mut BTreeMap<String, u8>,
         out: &mut BTreeMap<String, ScientificModule>,
     ) -> Result<(), ScientificError> {

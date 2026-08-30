@@ -1406,12 +1406,11 @@ impl Lowerer<'_> {
     ) -> Result<TensorScalarExpr, TensorCompileError> {
         let expression = self.expression(id)?.clone();
         match expression.kind {
-            SemanticExprKind::Number {
-                value, unit: None, ..
-            } => Ok(constant(value)),
-            SemanticExprKind::Number { unit: Some(_), .. } => Err(TensorCompileError::Unsupported(
-                "unit-bearing literal before numeric canonicalization".into(),
-            )),
+            // GX-F3: elaboration canonicalizes every unit-bearing literal to SI (see
+            // `semantic::Elaborator::canonicalize_number_literal`), so `value` is already
+            // correctly scaled regardless of `unit`; `unit` itself is retained on the arena node
+            // only for provenance/display.
+            SemanticExprKind::Number { value, .. } => Ok(constant(value)),
             SemanticExprKind::Symbol { symbol } => {
                 let evaluation = context.binding(self.default_site);
                 let input = self
