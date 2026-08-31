@@ -468,6 +468,7 @@ fn infer_spaces(
     for capture in &form.captures {
         collect_definition_fields(
             model,
+            form,
             capture.symbol,
             &mut BTreeSet::new(),
             &mut transitive_fields,
@@ -503,11 +504,33 @@ fn infer_spaces(
 
 fn collect_definition_fields(
     model: &SemanticModel,
+    form: &VariationalForm,
     symbol: SymbolId,
     visited: &mut BTreeSet<SymbolId>,
     fields: &mut BTreeSet<SymbolId>,
 ) -> Result<(), RequirementInferenceError> {
     if !visited.insert(symbol) {
+        return Ok(());
+    }
+    // GX-facet: a compiler-synthesized symbol (see `SymbolId::is_generated`) names no
+    // `model.symbols` entry; its definition (if any) lives in `form.captures` instead of
+    // `model.declarations`. Its role is never `PhysicalField`, so it never itself contributes a
+    // transitive field, but its definition is still walked for one, exactly like a real
+    // property's.
+    if symbol.is_generated() {
+        let Some(definition) = form
+            .captures
+            .iter()
+            .find(|capture| capture.symbol == symbol)
+            .and_then(|capture| capture.definition)
+        else {
+            return Ok(());
+        };
+        let mut dependencies = BTreeSet::new();
+        collect_symbols(&model.expressions, definition, &mut dependencies)?;
+        for dependency in dependencies {
+            collect_definition_fields(model, form, dependency, visited, fields)?;
+        }
         return Ok(());
     }
     let semantic_symbol = model
@@ -535,7 +558,7 @@ fn collect_definition_fields(
     let mut dependencies = BTreeSet::new();
     collect_symbols(&model.expressions, definition, &mut dependencies)?;
     for dependency in dependencies {
-        collect_definition_fields(model, dependency, visited, fields)?;
+        collect_definition_fields(model, form, dependency, visited, fields)?;
     }
     Ok(())
 }
@@ -1876,6 +1899,40 @@ impl<'a> BindingCatalog<'a> {
                     space: Some(&argument.space),
                     role: BindingRole::PhysicalField,
                     definition: None,
+                },
+            );
+        }
+        // GX-facet: a `FormCapture` whose symbol is compiler-synthesized (see
+        // `SymbolId::is_generated`) names no `model.symbols` entry -- e.g. a boundary
+        // condition's bare provider-call value (`neumann u = flux(t);`). Its `definition`
+        // (when present) is the original defining expression, exactly the role
+        // `model.declarations` plays for a real `property`/`value`/`constitutive` symbol above,
+        // so it resolves to the same `InputSourceRequirement` and FC4 binds it identically.
+        for (index, capture) in form.captures.iter().enumerate() {
+            if !capture.symbol.is_generated() {
+                continue;
+            }
+            let definition = capture.definition.map(|definition| match capture.role {
+                FormCaptureRole::ConstitutiveLaw => BindingDefinition::ConstitutiveLaw(definition),
+                FormCaptureRole::Property => BindingDefinition::Property(definition),
+                _ => BindingDefinition::Value(definition),
+            });
+            let role = match capture.role {
+                FormCaptureRole::PhysicalField(_) => BindingRole::PhysicalField,
+                FormCaptureRole::Parameter => BindingRole::Parameter,
+                FormCaptureRole::Constant => BindingRole::Constant,
+                FormCaptureRole::Source => BindingRole::Other,
+                FormCaptureRole::Property => BindingRole::Property,
+                FormCaptureRole::ConstitutiveLaw => BindingRole::ConstitutiveLaw,
+            };
+            bindings.insert(
+                capture.symbol,
+                BindingInfo {
+                    key: format!("generated_capture_{index}"),
+                    domain: capture.domain,
+                    space: capture.space.as_ref(),
+                    role,
+                    definition,
                 },
             );
         }

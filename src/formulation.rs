@@ -17,7 +17,10 @@ use thiserror::Error;
 
 // "/5" (GX-A3) adds `providers`, so FC4 can see provider `differentiability` when deciding
 // which `ModelDefinedProperty` inputs to inline for chain-rule tangents.
-pub const VARIATIONAL_FORM_SCHEMA: &str = "scientia-variational-form/5";
+// "/6" (GX-facet) adds `FormCapture::definition`: a boundary condition whose authored value is a
+// bare provider call (no wrapping symbol) synthesizes a compiler symbol and capture for it, so
+// FC4 can bind it as an External input exactly like a cell-measure `ModelDefinedProperty`.
+pub const VARIATIONAL_FORM_SCHEMA: &str = "scientia-variational-form/6";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FormArity {
@@ -61,6 +64,12 @@ pub struct FormCapture {
     pub domain: Option<DomainId>,
     pub space: Option<SpaceSpec>,
     pub source_span: SourceSpan,
+    /// GX-facet: the original defining expression, populated only when `symbol` is a
+    /// compiler-synthesized id (see [`SymbolId::is_generated`]) that names no real
+    /// `model.symbols` entry -- for example a boundary condition's bare provider-call value.
+    /// `None` for every capture that names a real, declared symbol; those already resolve their
+    /// definition through `model.declarations`.
+    pub definition: Option<ExprId>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -334,6 +343,7 @@ pub fn compile_variational_form(
                     domain: symbol.domain,
                     space: symbol.space.clone(),
                     source_span: symbol.span,
+                    definition: None,
                 });
             }
         }
@@ -548,6 +558,7 @@ pub fn derive_variational_form_for(
     let mut assumptions = vec![];
     let mut boundary_terms = vec![];
     let mut substituted_neumann_fluxes = BTreeSet::new();
+    let mut boundary_captures: Vec<FormCapture> = vec![];
     let spatial_dimension = model.domains[domain.index()].spatial_dimension;
     for (term, sign) in terms {
         match arena.expressions[term.index()].kind.clone() {
@@ -597,6 +608,7 @@ pub fn derive_variational_form_for(
                     &mut assumptions,
                     &mut boundary_terms,
                     &mut substituted_neumann_fluxes,
+                    &mut boundary_captures,
                 )?;
             }
             SemanticExprKind::Differential {
@@ -642,6 +654,7 @@ pub fn derive_variational_form_for(
                     &mut assumptions,
                     &mut boundary_terms,
                     &mut substituted_neumann_fluxes,
+                    &mut boundary_captures,
                 )?;
             }
             SemanticExprKind::Differential {
@@ -683,6 +696,7 @@ pub fn derive_variational_form_for(
                     &mut assumptions,
                     &mut boundary_terms,
                     &mut substituted_neumann_fluxes,
+                    &mut boundary_captures,
                 )?;
             }
             _ => {
@@ -720,6 +734,12 @@ pub fn derive_variational_form_for(
         if symbol_id == argument_symbol {
             continue;
         }
+        // GX-facet: a compiler-synthesized symbol (see `SymbolId::is_generated`) names no
+        // `model.symbols` entry to look up here; `derive_boundary_terms` already recorded its
+        // capture directly in `boundary_captures`, merged in below.
+        if symbol_id.is_generated() {
+            continue;
+        }
         let symbol = model
             .symbols
             .get(symbol_id.index())
@@ -738,8 +758,10 @@ pub fn derive_variational_form_for(
             domain: symbol.domain,
             space: symbol.space.clone(),
             source_span: symbol.span,
+            definition: None,
         });
     }
+    captures.extend(boundary_captures);
 
     let source_semantic_digest = Digest {
         algorithm: "blake3".into(),
@@ -1075,6 +1097,7 @@ fn derive_boundary_terms(
     assumptions: &mut Vec<FormAssumption>,
     boundary_terms: &mut Vec<BoundaryTermReceipt>,
     substituted_neumann_fluxes: &mut BTreeSet<(RegionId, SymbolId)>,
+    boundary_captures: &mut Vec<FormCapture>,
 ) -> Result<(), FormCompileError> {
     let argument = match arena.expressions[test.index()].kind {
         SemanticExprKind::Symbol { symbol } => symbol,
@@ -1194,7 +1217,9 @@ fn derive_boundary_terms(
                     }
                     _ => unreachable!("only grad/div/curl boundary terms are derived"),
                 };
-                let substituted = arena.pair(*value, boundary_test, region.span)?;
+                let value =
+                    bind_boundary_value(arena, *value, declaration, region.span, boundary_captures);
+                let substituted = arena.pair(value, boundary_test, region.span)?;
                 let substituted = arena.with_sign(substituted, sign, region.span);
                 let integral_index = integrals.len();
                 integrals.push(VariationalIntegral {
@@ -1249,6 +1274,44 @@ fn derive_boundary_terms(
         }
     }
     Ok(())
+}
+
+/// GX-facet (bounded scope): a Neumann boundary value that is a bare provider call (e.g.
+/// `neumann u = flux(t);`) has no symbol of its own to bind a tensor input to, unlike a
+/// `property`/`source`-backed value that authors reference by name. Synthesize a compiler symbol
+/// for it, keyed on the boundary condition's own declaration id (so distinct boundary conditions
+/// never collide -- see `SymbolId::generated_for`), and record a `FormCapture` whose `definition`
+/// is the original call. FC4's tensor factoring then binds it exactly like a cell-measure
+/// `ModelDefinedProperty` input: an External input, never inlined. Anything other than a bare
+/// top-level provider call -- a symbol reference, or a compound expression that merely contains
+/// one -- is passed through unchanged and resolves (or refuses) exactly as before this change.
+fn bind_boundary_value(
+    arena: &mut FormArena,
+    value: ExprId,
+    declaration: DeclarationId,
+    span: SourceSpan,
+    boundary_captures: &mut Vec<FormCapture>,
+) -> ExprId {
+    if !matches!(
+        arena.expressions[value.index()].kind,
+        SemanticExprKind::ProviderCall { .. }
+    ) {
+        return value;
+    }
+    let mut ty = arena.expressions[value.index()].ty.clone();
+    ty.role = SemanticRole::Property;
+    let symbol = SymbolId::generated_for(declaration);
+    let symbol_expr = arena.push(SemanticExprKind::Symbol { symbol }, ty.clone(), span);
+    boundary_captures.push(FormCapture {
+        symbol,
+        role: FormCaptureRole::Property,
+        ty,
+        domain: None,
+        space: None,
+        source_span: span,
+        definition: Some(value),
+    });
+    symbol_expr
 }
 
 struct FormArena {
