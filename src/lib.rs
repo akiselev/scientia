@@ -22,6 +22,7 @@ pub mod scientific;
 pub mod semantic;
 pub mod source;
 pub mod structural;
+pub mod structure;
 pub mod structured;
 pub mod system;
 pub mod tensor;
@@ -92,10 +93,10 @@ pub use scientific::{
     PropertyBranch, PropertyDefinition, PropertyDomain, PropertyEvidence, PropertyInput,
     PropertyLocality, PropertyModel, PropertyOutput, PropertyProviderRef, PropertySignature,
     PropertyTable, ProviderDecl, ProviderDomainBound, ProviderInputDecl, ResolvedModules,
-    ScientificError, ScientificModel, ScientificModule, TableDerivativePolicy, TimeStateSemantics,
-    canonicalize_authored_quantity, derive_coupling_graph, format_scientific_module,
-    parse_expression, parse_scientific_module, parse_scientific_module_diagnostics,
-    resolve_modules, semantic_digest, validate_quantities,
+    ScientificError, ScientificModel, ScientificModule, TableDerivativePolicy, TimeRole,
+    TimeStateSemantics, canonicalize_authored_quantity, derive_coupling_graph,
+    format_scientific_module, parse_expression, parse_scientific_module,
+    parse_scientific_module_diagnostics, resolve_modules, semantic_digest, validate_quantities,
 };
 pub use semantic::{
     Axis, AxisContraction, DeclarationId, DifferentialOperator, DomainId, ExactLiteral, ExprId,
@@ -113,6 +114,12 @@ pub use structural::{
     EquationDerivativeProfile, IncidenceSystem, IndexReductionPlan, Matching, Schedule,
     StructuralCompileError, StructuralError, analyze_aliases, compile_schedule,
     compile_schedule_without_tearing, derivative_profile, maximum_matching, pantelides_plan,
+};
+pub use structure::{
+    BlockClass, BlockStructure, FormSymmetry, Linearity, NullspaceCandidate, NullspaceKind,
+    OPERATOR_STRUCTURE_SCHEMA, OperatorStructure, PropertyDependence,
+    PropertyTangent as StructurePropertyTangent, StructureError, TimeStructure,
+    derive_operator_structure, derive_operator_structure_for_system,
 };
 pub use structured::{
     STRUCTURED_KERNEL_BUNDLE_SCHEMA, StructuredDerivativeContract, StructuredDerivativeEvidence,
@@ -141,10 +148,9 @@ pub use tensor_interpreter::{
     interpret_element_operator, interpret_qfunction,
 };
 pub use verification::{
-    ConvergenceExpectation, DerivativeCheckSpec, FormalizableObligationRef, InvariantSpec,
-    LimitingCaseSpec, ManufacturedSolutionSpec, ObservableDefinition, ToleranceClass,
-    UnsupportedGeneration, VERIFICATION_OBLIGATION_SCHEMA, VERIFICATION_PROFILE_SCHEMA,
-    ValidityCondition, VerificationEvidenceClass, VerificationObligation,
-    VerificationObligationKind, VerificationProfile, VerificationProfileError,
-    derive_verification_profiles,
+    ConservationRelation, ExactSolutionSource, FormalizableObligationRef, ObservableDefinition,
+    OrderBasis, RefinementAxis, ToleranceClass, UnsupportedGeneration,
+    VERIFICATION_OBLIGATION_SCHEMA, VERIFICATION_PROFILE_SCHEMA, ValidityCondition,
+    VerificationEvidenceClass, VerificationObligation, VerificationObligationKind,
+    VerificationProfile, VerificationProfileError, derive_verification_profiles,
 };

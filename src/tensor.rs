@@ -988,7 +988,7 @@ fn qfunction_digest(
     })
 }
 
-fn is_active(form: &VariationalForm, symbol: SymbolId) -> bool {
+pub(crate) fn is_active(form: &VariationalForm, symbol: SymbolId) -> bool {
     form.arguments
         .iter()
         .any(|argument| argument.symbol == symbol && argument.role == FormArgumentRole::Trial)
@@ -1149,7 +1149,7 @@ fn property_providers_all_differentiable(form: &VariationalForm, id: ExprId) -> 
     walk(&form.expressions, id, &form.providers)
 }
 
-fn collect_direct_symbols(
+pub(crate) fn collect_direct_symbols(
     expressions: &[crate::semantic::SemanticExpr],
     id: ExprId,
     symbols: &mut BTreeSet<SymbolId>,

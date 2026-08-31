@@ -1,9 +1,11 @@
 use quantitas::{QuantityKindRegistry, UnitRegistry};
 use scientia::{
-    FilesystemModuleSource, IncidenceSystem, NoImports, Registries, SemanticModel, SemanticModule,
-    SourceDiagnostic, compile_schedule, compile_semantics_with, compile_variational_form,
-    derive_binding_slots, derive_coupling_graph, derive_variational_form, factor_operator,
-    format_scientific_module, infer_form_requirements, parse_scientific_module_diagnostics,
+    FilesystemModuleSource, IncidenceSystem, NoImports, Registries, SemanticDeclarationKind,
+    SemanticModel, SemanticModule, SourceDiagnostic, compile_operator_system, compile_schedule,
+    compile_semantics_with, compile_variational_form, derive_binding_slots, derive_coupling_graph,
+    derive_operator_structure, derive_operator_structure_for_system, derive_variational_form,
+    derive_verification_profiles, factor_operator, format_scientific_module,
+    infer_form_requirements, pantelides_plan, parse_scientific_module_diagnostics,
     semantic_arena_digest, semantic_digest,
 };
 use std::{env, fs, process::ExitCode};
@@ -368,6 +370,90 @@ fn run() -> Result<(), String> {
                 serde_json::to_string_pretty(&semantic).map_err(|error| error.to_string())?
             );
         }
+        "structure" => {
+            let (semantic, _advisories) = {
+                let compilation = elaborate(&source, module_root.as_deref())
+                    .map_err(|diagnostics| render_diagnostics(&source, &diagnostics, json))?;
+                (compilation.semantic, compilation.advisories)
+            };
+            let structure = match selector.and_then(|value| value.split_once(':')) {
+                Some((model_name, equation_name)) => {
+                    let semantic_model = select_model(&semantic, Some(model_name))?;
+                    let form =
+                        derive_variational_form(&semantic, &semantic_model.name, equation_name)
+                            .map_err(|error| error.to_string())?;
+                    let requirements = infer_form_requirements(&semantic, &form)
+                        .map_err(|error| error.to_string())?;
+                    let factorization =
+                        factor_operator(&form, &requirements).map_err(|error| error.to_string())?;
+                    let dae_plan = module
+                        .models
+                        .iter()
+                        .find(|model| model.name == semantic_model.name)
+                        .and_then(|model| pantelides_plan(model, 2).ok());
+                    derive_operator_structure(
+                        &form,
+                        &requirements,
+                        &factorization,
+                        dae_plan.as_ref(),
+                    )
+                    .map_err(|error| error.to_string())?
+                }
+                None => {
+                    let semantic_model = select_model(&semantic, selector)?;
+                    let equation_names = semantic_model
+                        .declarations
+                        .iter()
+                        .filter(|declaration| {
+                            matches!(declaration.kind, SemanticDeclarationKind::Equation { .. })
+                        })
+                        .map(|declaration| declaration.name.as_str())
+                        .collect::<Vec<_>>();
+                    let system =
+                        compile_operator_system(&semantic, &semantic_model.name, &equation_names)
+                            .map_err(|error| error.to_string())?;
+                    let dae_plan = module
+                        .models
+                        .iter()
+                        .find(|model| model.name == semantic_model.name)
+                        .and_then(|model| pantelides_plan(model, 2).ok());
+                    derive_operator_structure_for_system(&system, dae_plan.as_ref())
+                        .map_err(|error| error.to_string())?
+                }
+            };
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&structure).map_err(|error| error.to_string())?
+            );
+        }
+        "derive-verification" => {
+            let compilation = elaborate(&source, module_root.as_deref())
+                .map_err(|diagnostics| render_diagnostics(&source, &diagnostics, json))?;
+            let profiles = derive_verification_profiles(&compilation);
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&profiles).map_err(|error| error.to_string())?
+                );
+            } else {
+                for profile in &profiles {
+                    println!(
+                        "model {} ({} obligation(s), {} observable(s)):",
+                        profile.model,
+                        profile.obligations.len(),
+                        profile.observables.len()
+                    );
+                    for obligation in &profile.obligations {
+                        let status = if obligation.unsupported.is_some() {
+                            "unsupported"
+                        } else {
+                            "ok"
+                        };
+                        println!("  {status:<11} {:?}", obligation.kind);
+                    }
+                }
+            }
+        }
         "slots" => {
             let compilation = elaborate(&source, module_root.as_deref())
                 .map_err(|diagnostics| render_diagnostics(&source, &diagnostics, json))?;
@@ -392,7 +478,7 @@ fn run() -> Result<(), String> {
 }
 
 fn usage() -> String {
-    "usage: scientia <check|fmt|parse|elaborate|inspect|freeze|explain|coupling|structural|form|derive-form|requirements|derive-requirements|operator|derive-operator|slots> [--json] [--module-root <dir>] <model.res> [model|model:item] [detail]".into()
+    "usage: scientia <check|fmt|parse|elaborate|inspect|freeze|explain|coupling|structural|structure|form|derive-form|requirements|derive-requirements|operator|derive-operator|derive-verification|slots> [--json] [--module-root <dir>] <model.res> [model|model:item] [detail]".into()
 }
 
 fn select_model<'a>(

@@ -4,16 +4,18 @@
 //! choose numerical tolerances, execute a solver, or promote product support.
 
 use crate::id::{Digest, span_independent_digest};
-use crate::scientific::{FieldRole, semantic_digest};
+use crate::scientific::{FieldRole, ValueShape, semantic_digest};
 use crate::semantic::{
-    SemanticCompilation, SemanticDeclarationKind, SemanticExprKind, SemanticModel, SemanticRole,
+    DeclarationId, ExprId, SemanticCompilation, SemanticDeclarationKind, SemanticExprKind,
+    SemanticModel, SemanticRole, SemanticShape, SymbolId,
 };
 use crate::source::SourceSpan;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use thiserror::Error;
 
 pub const VERIFICATION_PROFILE_SCHEMA: &str = "scientia-verification-profile/1";
-pub const VERIFICATION_OBLIGATION_SCHEMA: &str = "scientia-verification-obligation/1";
+pub const VERIFICATION_OBLIGATION_SCHEMA: &str = "scientia-verification-obligation/2";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -37,46 +39,6 @@ pub enum ToleranceClass {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ManufacturedSolutionSpec {
-    pub field: String,
-    pub construction: String,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct LimitingCaseSpec {
-    pub name: String,
-    pub relation: String,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct InvariantSpec {
-    pub declaration: String,
-    pub relation: String,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DerivativeCheckSpec {
-    pub target: String,
-    pub active_inputs: Vec<String>,
-    pub construction: String,
-    pub step_policy: String,
-    pub expected_behavior: String,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ConvergenceExpectation {
-    pub field: String,
-    pub refinement_axis: String,
-    pub expected_order_basis: String,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ObservableDefinition {
-    pub name: String,
-    pub scientific_meaning: String,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ValidityCondition {
     pub statement: String,
 }
@@ -86,15 +48,95 @@ pub struct FormalizableObligationRef {
     pub language_neutral_claim: String,
 }
 
+/// An `@mms` field's exact solution: either an authored expression, or a slot id (contract C2.1
+/// grammar) naming the boundary/initial provider a model actually calls, since no corpus model
+/// authors a standalone closed-form exact solution today.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", content = "value", rename_all = "snake_case")]
+pub enum ExactSolutionSource {
+    Authored(ExprId),
+    Slot(String),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RefinementAxis {
+    MeshSize,
+    TimeStep,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", content = "value", rename_all = "snake_case")]
+pub enum OrderBasis {
+    SpaceOrderPlusOne,
+    IntegratorOrder(u8),
+    Declared(f64),
+}
+
+/// How a `Conservation` obligation's balance is stated. Every corpus conservation-family
+/// annotation (`@conservation`, `@charge_conservation`, `@energy_balance`, `@power_balance`,
+/// `@mass_conservation`, `@interface_conservation`) asserts the same shape of claim -- the
+/// integral of `quantity` is preserved/balanced under the model's own dynamics -- so one variant
+/// covers all of them; nothing in the annotation grammar distinguishes a different relation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConservationRelation {
+    GlobalBalance,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "spec", rename_all = "snake_case")]
 pub enum VerificationObligationKind {
-    Dimension { symbol: String },
-    ManufacturedSolution(ManufacturedSolutionSpec),
-    LimitingCase(LimitingCaseSpec),
-    Invariant(InvariantSpec),
-    Derivative(DerivativeCheckSpec),
-    Convergence(ConvergenceExpectation),
+    Dimension {
+        symbol: SymbolId,
+    },
+    ManufacturedSolution {
+        field: SymbolId,
+        exact: ExactSolutionSource,
+    },
+    Convergence {
+        field: SymbolId,
+        axis: RefinementAxis,
+        order_basis: OrderBasis,
+    },
+    TemporalConvergence {
+        field: SymbolId,
+        order_basis: OrderBasis,
+    },
+    LimitingCase {
+        name: String,
+        relation: ExprId,
+    },
+    Invariant {
+        declaration: DeclarationId,
+        relation: ExprId,
+    },
+    Conservation {
+        quantity: ExprId,
+        relation: ConservationRelation,
+    },
+    PatchTest {
+        field: SymbolId,
+    },
+    RigidBodyModes {
+        field: SymbolId,
+        count: u8,
+    },
+    DerivativeTaylor {
+        block: Option<String>,
+        active_inputs: Vec<SymbolId>,
+    },
+    InfSup {
+        pair: String,
+    },
+    /// Not part of contract C6.1's kind list: a content-free carrier for obligations whose
+    /// `unsupported` field is set (see `VERIFY_UNSUPPORTED_ANNOTATION`). Every other kind now
+    /// requires a real `SymbolId`/`ExprId`, and a genuinely unsupported annotation (e.g.
+    /// `@shock_tube`, `@bh_curve`) has none to offer honestly; this variant exists so Scientia
+    /// never fabricates one. Flagged as a suggested C11 amendment in the landing report.
+    Unsupported {
+        name: String,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -103,7 +145,7 @@ pub struct UnsupportedGeneration {
     pub reason: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct VerificationObligation {
     pub schema: String,
     pub id: Digest,
@@ -124,6 +166,12 @@ pub struct VerificationObligation {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ObservableDefinition {
+    pub name: String,
+    pub scientific_meaning: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct VerificationProfile {
     pub schema: String,
     pub parent_semantic_digest: String,
@@ -269,6 +317,129 @@ impl VerificationProfile {
     }
 }
 
+fn symbol_from_expr(model: &SemanticModel, expr: ExprId) -> Option<SymbolId> {
+    match model.expressions.get(expr.index())?.kind {
+        SemanticExprKind::Symbol { symbol } => Some(symbol),
+        _ => None,
+    }
+}
+
+fn number_arg(
+    model: &SemanticModel,
+    arguments: &BTreeMap<String, ExprId>,
+    key: &str,
+) -> Option<f64> {
+    let expr = arguments.get(key)?;
+    match model.expressions.get(expr.index())?.kind {
+        SemanticExprKind::Number { value, .. } => Some(value),
+        _ => None,
+    }
+}
+
+fn sole_field_with_role(model: &SemanticModel, role: &FieldRole) -> Option<SymbolId> {
+    let mut found = None;
+    for symbol in &model.symbols {
+        if let SemanticRole::PhysicalField(candidate) = &symbol.ty.role
+            && candidate == role
+        {
+            if found.is_some() {
+                return None;
+            }
+            found = Some(symbol.id);
+        }
+    }
+    found
+}
+
+fn sole_vector_field_with_role(model: &SemanticModel, role: &FieldRole) -> Option<SymbolId> {
+    let mut found = None;
+    for symbol in &model.symbols {
+        if let SemanticRole::PhysicalField(candidate) = &symbol.ty.role
+            && candidate == role
+            && matches!(
+                symbol.ty.shape,
+                SemanticShape::Numeric(ValueShape::Vector(_))
+            )
+        {
+            if found.is_some() {
+                return None;
+            }
+            found = Some(symbol.id);
+        }
+    }
+    found
+}
+
+/// A `@rigid_body_modes` annotation carries no `field` argument in the corpus; the same model's
+/// own `@patch_test(field = ...)` (when present) names the field these checks are paired with in
+/// every corpus occurrence, so it takes priority over the shape-based fallback.
+fn companion_patch_test_field(model: &SemanticModel) -> Option<SymbolId> {
+    model.declarations.iter().find_map(|declaration| {
+        let SemanticDeclarationKind::Verification { arguments } = &declaration.kind else {
+            return None;
+        };
+        if declaration.name != "patch_test" {
+            return None;
+        }
+        symbol_from_expr(model, *arguments.get("field")?)
+    })
+}
+
+/// Slot id for an `@mms(field = ...)` field with no authored exact expression (contract C6.1):
+/// the boundary/initial condition's own provider call when one exists, else `provider/exact_<field>`.
+fn manufactured_exact_source(model: &SemanticModel, field: SymbolId) -> ExactSolutionSource {
+    let mut value_expr = None;
+    for declaration in &model.declarations {
+        if let SemanticDeclarationKind::BoundaryCondition {
+            target: Some(target),
+            value,
+            ..
+        } = &declaration.kind
+            && *target == field
+        {
+            value_expr = Some(*value);
+            break;
+        }
+    }
+    if value_expr.is_none() {
+        for declaration in &model.declarations {
+            if let SemanticDeclarationKind::InitialCondition {
+                target: Some(target),
+                value,
+            } = &declaration.kind
+                && *target == field
+            {
+                value_expr = Some(*value);
+                break;
+            }
+        }
+    }
+    if let Some(value) = value_expr
+        && let Some(expression) = model.expressions.get(value.index())
+        && let SemanticExprKind::ProviderCall { provider, .. } = &expression.kind
+        && let Some(found) = model
+            .providers
+            .iter()
+            .find(|candidate| candidate.id == *provider)
+    {
+        return ExactSolutionSource::Slot(format!("provider/{}", found.name));
+    }
+    let field_name = model
+        .symbols
+        .get(field.index())
+        .map(|symbol| symbol.name.as_str())
+        .unwrap_or("field");
+    ExactSolutionSource::Slot(format!("provider/exact_{field_name}"))
+}
+
+fn conservation_quantity(arguments: &BTreeMap<String, ExprId>) -> Option<ExprId> {
+    if arguments.len() == 1 {
+        arguments.values().next().copied()
+    } else {
+        None
+    }
+}
+
 /// Derive deterministic scientific verification intent without running any
 /// numerical method. One profile is emitted per semantic model.
 #[must_use]
@@ -289,9 +460,7 @@ pub fn derive_verification_profiles(compilation: &SemanticCompilation) -> Vec<Ve
                     &model.name,
                     symbol.span,
                     meaning,
-                    VerificationObligationKind::Dimension {
-                        symbol: symbol.name.clone(),
-                    },
+                    VerificationObligationKind::Dimension { symbol: symbol.id },
                     vec![],
                     vec![symbol.name.clone()],
                     "the supplied value has the exact elaborated shape, dimension, quantity kind, and frame",
@@ -301,6 +470,20 @@ pub fn derive_verification_profiles(compilation: &SemanticCompilation) -> Vec<Ve
                 ));
             }
 
+            let active_input_symbols = model
+                .symbols
+                .iter()
+                .filter(|symbol| {
+                    matches!(
+                        symbol.ty.role,
+                        SemanticRole::Parameter
+                            | SemanticRole::Property
+                            | SemanticRole::PhysicalField(FieldRole::Parameter)
+                            | SemanticRole::PhysicalField(FieldRole::Coefficient)
+                    )
+                })
+                .map(|symbol| symbol.id)
+                .collect::<Vec<_>>();
             let active_inputs = model
                 .symbols
                 .iter()
@@ -327,15 +510,15 @@ pub fn derive_verification_profiles(compilation: &SemanticCompilation) -> Vec<Ve
                             ),
                         },
                     ),
-                    SemanticDeclarationKind::Invariant { .. } => obligations.push(make_obligation(
+                    SemanticDeclarationKind::Invariant { value } => obligations.push(make_obligation(
                         &parent,
                         &model.name,
                         declaration.span,
                         format!("authored invariant {}::{}", model.name, declaration.name),
-                        VerificationObligationKind::Invariant(InvariantSpec {
-                            declaration: declaration.name.clone(),
-                            relation: "the invariant expression holds over its declared evaluation domain".into(),
-                        }),
+                        VerificationObligationKind::Invariant {
+                            declaration: declaration.id,
+                            relation: *value,
+                        },
                         vec![],
                         vec![declaration.name.clone()],
                         "the authored invariant evaluates true",
@@ -349,16 +532,13 @@ pub fn derive_verification_profiles(compilation: &SemanticCompilation) -> Vec<Ve
                             &model.name,
                             declaration.span,
                             format!("directional derivative of equation {}::{}", model.name, declaration.name),
-                            VerificationObligationKind::Derivative(DerivativeCheckSpec {
-                                target: declaration.name.clone(),
-                                active_inputs: active_inputs.clone(),
-                                construction: "centered directional finite difference against the declared derivative product".into(),
-                                step_policy: "evaluate a precommitted decreasing geometric sequence of symmetric positive and negative steps; reject perturbed points that leave the declared smooth stratum".into(),
-                                expected_behavior: "second-order truncation before the roundoff-dominated regime; no single-step pass claim".into(),
-                            }),
+                            VerificationObligationKind::DerivativeTaylor {
+                                block: Some(declaration.name.clone()),
+                                active_inputs: active_input_symbols.clone(),
+                            },
                             vec![ValidityCondition { statement: "the evaluation remains in the declared smooth stratum".into() }],
                             active_inputs.clone(),
-                            "the derivative product matches the directional residual change",
+                            "the derivative product matches the directional residual change; second-order truncation before roundoff",
                             ToleranceClass::DirectionalTruncation,
                             VerificationEvidenceClass::Numerical,
                             None,
@@ -376,79 +556,262 @@ pub fn derive_verification_profiles(compilation: &SemanticCompilation) -> Vec<Ve
                             "mms" => {
                                 let field = arguments
                                     .get("field")
-                                    .map(|expression| argument_label(model, expression.index()))
-                                    .unwrap_or_else(|| "authored field".into());
+                                    .and_then(|expression| symbol_from_expr(model, *expression));
+                                match field {
+                                    Some(field) => {
+                                        obligations.push(make_obligation(
+                                            &parent,
+                                            &model.name,
+                                            declaration.span,
+                                            format!("manufactured solution annotation {}::{}", model.name, declaration.name),
+                                            VerificationObligationKind::ManufacturedSolution {
+                                                field,
+                                                exact: manufactured_exact_source(model, field),
+                                            },
+                                            vec![],
+                                            generated.clone(),
+                                            "the realized residual and boundary data reproduce the manufactured field",
+                                            ToleranceClass::Discretization,
+                                            VerificationEvidenceClass::Numerical,
+                                            None,
+                                        ));
+                                        obligations.push(make_obligation(
+                                            &parent,
+                                            &model.name,
+                                            declaration.span,
+                                            format!("mesh convergence for manufactured field in {}", model.name),
+                                            VerificationObligationKind::Convergence {
+                                                field,
+                                                axis: RefinementAxis::MeshSize,
+                                                order_basis: OrderBasis::SpaceOrderPlusOne,
+                                            },
+                                            vec![ValidityCondition { statement: "the same mathematical problem is solved on every refinement".into() }],
+                                            vec!["at least three deterministic refinements".into()],
+                                            "the observed error order meets the predeclared method expectation",
+                                            ToleranceClass::Discretization,
+                                            VerificationEvidenceClass::Numerical,
+                                            None,
+                                        ));
+                                    }
+                                    None => obligations.push(unsupported_obligation(
+                                        &parent, model, declaration, name, generated,
+                                        "no `field` argument resolves to a declared symbol",
+                                    )),
+                                }
+                            }
+                            "spatial_convergence" => {
+                                let field = sole_field_with_role(model, &FieldRole::State);
+                                let order = number_arg(model, arguments, "order");
+                                match (field, order) {
+                                    (Some(field), Some(order)) => obligations.push(make_obligation(
+                                        &parent,
+                                        &model.name,
+                                        declaration.span,
+                                        format!("spatial convergence annotation in {}", model.name),
+                                        VerificationObligationKind::Convergence {
+                                            field,
+                                            axis: RefinementAxis::MeshSize,
+                                            order_basis: OrderBasis::Declared(order),
+                                        },
+                                        vec![ValidityCondition { statement: "the same mathematical problem is solved on every refinement".into() }],
+                                        generated.clone(),
+                                        "the observed spatial error order meets the declared order",
+                                        ToleranceClass::Discretization,
+                                        VerificationEvidenceClass::Numerical,
+                                        None,
+                                    )),
+                                    _ => obligations.push(unsupported_obligation(
+                                        &parent, model, declaration, name, generated,
+                                        "no unique state field or declared order to convergence-check",
+                                    )),
+                                }
+                            }
+                            "temporal_convergence" => {
+                                let field = sole_field_with_role(model, &FieldRole::State);
+                                let order = number_arg(model, arguments, "order");
+                                match (field, order) {
+                                    (Some(field), Some(order)) => obligations.push(make_obligation(
+                                        &parent,
+                                        &model.name,
+                                        declaration.span,
+                                        format!("temporal convergence annotation in {}", model.name),
+                                        VerificationObligationKind::TemporalConvergence {
+                                            field,
+                                            order_basis: OrderBasis::Declared(order),
+                                        },
+                                        vec![ValidityCondition { statement: "the same mathematical problem is solved on every time-step refinement".into() }],
+                                        generated.clone(),
+                                        "the observed temporal error order meets the declared order",
+                                        ToleranceClass::Discretization,
+                                        VerificationEvidenceClass::Numerical,
+                                        None,
+                                    )),
+                                    _ => obligations.push(unsupported_obligation(
+                                        &parent, model, declaration, name, generated,
+                                        "no unique state field or declared order to convergence-check",
+                                    )),
+                                }
+                            }
+                            "patch_test" => {
+                                let field = arguments
+                                    .get("field")
+                                    .and_then(|expression| symbol_from_expr(model, *expression));
+                                match field {
+                                    Some(field) => obligations.push(make_obligation(
+                                        &parent,
+                                        &model.name,
+                                        declaration.span,
+                                        format!("patch test annotation in {}", model.name),
+                                        VerificationObligationKind::PatchTest { field },
+                                        vec![],
+                                        generated.clone(),
+                                        "a constant-strain patch reproduces exactly on any admissible mesh",
+                                        ToleranceClass::Discretization,
+                                        VerificationEvidenceClass::Numerical,
+                                        None,
+                                    )),
+                                    None => obligations.push(unsupported_obligation(
+                                        &parent, model, declaration, name, generated,
+                                        "no `field` argument resolves to a declared symbol",
+                                    )),
+                                }
+                            }
+                            "rigid_body_modes" => {
+                                let field = companion_patch_test_field(model)
+                                    .or_else(|| sole_vector_field_with_role(model, &FieldRole::Unknown));
+                                let count = number_arg(model, arguments, "count");
+                                match (field, count) {
+                                    (Some(field), Some(count)) => obligations.push(make_obligation(
+                                        &parent,
+                                        &model.name,
+                                        declaration.span,
+                                        format!("rigid-body-modes annotation in {}", model.name),
+                                        VerificationObligationKind::RigidBodyModes {
+                                            field,
+                                            count: count as u8,
+                                        },
+                                        vec![],
+                                        generated.clone(),
+                                        "the declared number of zero-energy rigid-body modes are recovered",
+                                        ToleranceClass::Roundoff,
+                                        VerificationEvidenceClass::Numerical,
+                                        None,
+                                    )),
+                                    _ => obligations.push(unsupported_obligation(
+                                        &parent, model, declaration, name, generated,
+                                        "no unique vector field or declared count for rigid-body modes",
+                                    )),
+                                }
+                            }
+                            "jvp_taylor" => {
+                                let block = arguments
+                                    .get("block")
+                                    .map(|expression| argument_label(model, expression.index()));
                                 obligations.push(make_obligation(
                                     &parent,
                                     &model.name,
                                     declaration.span,
-                                    format!("manufactured solution annotation {}::{}", model.name, declaration.name),
-                                    VerificationObligationKind::ManufacturedSolution(ManufacturedSolutionSpec {
-                                        field: field.clone(),
-                                        construction: "substitute an authored exact field and derive consistent source and boundary data".into(),
-                                    }),
-                                    vec![],
+                                    format!("JVP Taylor-remainder annotation in {}", model.name),
+                                    VerificationObligationKind::DerivativeTaylor {
+                                        block,
+                                        active_inputs: active_input_symbols.clone(),
+                                    },
+                                    vec![ValidityCondition { statement: "the evaluation remains in the declared smooth stratum".into() }],
                                     generated.clone(),
-                                    "the realized residual and boundary data reproduce the manufactured field",
-                                    ToleranceClass::Discretization,
-                                    VerificationEvidenceClass::Numerical,
-                                    None,
-                                ));
-                                obligations.push(make_obligation(
-                                    &parent,
-                                    &model.name,
-                                    declaration.span,
-                                    format!("mesh convergence for manufactured field in {}", model.name),
-                                    VerificationObligationKind::Convergence(ConvergenceExpectation {
-                                        field,
-                                        refinement_axis: "mesh_size".into(),
-                                        expected_order_basis: "declared approximation space and measured norm".into(),
-                                    }),
-                                    vec![ValidityCondition { statement: "the same mathematical problem is solved on every refinement".into() }],
-                                    vec!["at least three deterministic refinements".into()],
-                                    "the observed error order meets the predeclared method expectation",
-                                    ToleranceClass::Discretization,
+                                    "the derivative product matches the directional residual change; second-order truncation before roundoff",
+                                    ToleranceClass::DirectionalTruncation,
                                     VerificationEvidenceClass::Numerical,
                                     None,
                                 ));
                             }
-                            "limiting_case" => obligations.push(make_obligation(
-                                &parent,
-                                &model.name,
-                                declaration.span,
-                                format!("limiting-case annotation in {}", model.name),
-                                VerificationObligationKind::LimitingCase(LimitingCaseSpec {
-                                    name: declaration.name.clone(),
-                                    relation: "the authored limit recovers the declared reduced model".into(),
-                                }),
-                                vec![],
-                                generated,
-                                "the observable approaches the declared limiting relation",
-                                ToleranceClass::Discretization,
-                                VerificationEvidenceClass::Numerical,
-                                None,
-                            )),
+                            "inf_sup" => {
+                                let pair = arguments
+                                    .get("pair")
+                                    .map(|expression| argument_label(model, expression.index()));
+                                match pair {
+                                    Some(pair) => obligations.push(make_obligation(
+                                        &parent,
+                                        &model.name,
+                                        declaration.span,
+                                        format!("inf-sup stability annotation in {}", model.name),
+                                        VerificationObligationKind::InfSup { pair },
+                                        vec![],
+                                        generated.clone(),
+                                        "the discrete inf-sup constant stays bounded away from zero under refinement",
+                                        ToleranceClass::Discretization,
+                                        VerificationEvidenceClass::Numerical,
+                                        None,
+                                    )),
+                                    None => obligations.push(unsupported_obligation(
+                                        &parent, model, declaration, name, generated,
+                                        "no `pair` argument to name the discrete space pairing",
+                                    )),
+                                }
+                            }
+                            "energy_balance" | "power_balance" | "charge_conservation"
+                            | "mass_conservation" | "conservation" | "interface_conservation" => {
+                                match conservation_quantity(arguments) {
+                                    Some(quantity) => obligations.push(make_obligation(
+                                        &parent,
+                                        &model.name,
+                                        declaration.span,
+                                        format!("conservation annotation {}::{}", model.name, name),
+                                        VerificationObligationKind::Conservation {
+                                            quantity,
+                                            relation: ConservationRelation::GlobalBalance,
+                                        },
+                                        vec![],
+                                        generated.clone(),
+                                        "the declared quantity's global balance is preserved",
+                                        ToleranceClass::Discretization,
+                                        VerificationEvidenceClass::Numerical,
+                                        None,
+                                    )),
+                                    // A bare `@energy_balance()`/`@charge_conservation()`/... names
+                                    // no expression at all; Scientia does not guess which model
+                                    // expression is "the" conserved quantity (see the landing
+                                    // report for the annotations this affects).
+                                    None => obligations.push(unsupported_obligation(
+                                        &parent, model, declaration, name, generated,
+                                        "the bare annotation names no quantity expression to reference",
+                                    )),
+                                }
+                            }
+                            "limiting_case" => {
+                                let relation = if arguments.len() == 1 {
+                                    arguments.values().next().copied()
+                                } else {
+                                    None
+                                };
+                                match relation {
+                                    Some(relation) => obligations.push(make_obligation(
+                                        &parent,
+                                        &model.name,
+                                        declaration.span,
+                                        format!("limiting-case annotation in {}", model.name),
+                                        VerificationObligationKind::LimitingCase {
+                                            name: declaration.name.clone(),
+                                            relation,
+                                        },
+                                        vec![],
+                                        generated,
+                                        "the observable approaches the declared limiting relation",
+                                        ToleranceClass::Discretization,
+                                        VerificationEvidenceClass::Numerical,
+                                        None,
+                                    )),
+                                    None => obligations.push(unsupported_obligation(
+                                        &parent, model, declaration, name, generated,
+                                        "no unique relation argument to state the limiting case",
+                                    )),
+                                }
+                            }
                             // Validation annotations identify product evidence sources; they are
                             // not scientific verification checks generated by Scientia.
                             "validation" => {}
-                            _ => obligations.push(make_obligation(
-                                &parent,
-                                &model.name,
-                                declaration.span,
-                                format!("unsupported verification annotation {}::{}", model.name, declaration.name),
-                                VerificationObligationKind::LimitingCase(LimitingCaseSpec {
-                                    name: declaration.name.clone(),
-                                    relation: "generation is unavailable".into(),
-                                }),
-                                vec![],
-                                generated,
-                                "generation is structurally refused",
-                                ToleranceClass::Exact,
-                                VerificationEvidenceClass::Semantic,
-                                Some(UnsupportedGeneration {
-                                    code: "VERIFY_UNSUPPORTED_ANNOTATION".into(),
-                                    reason: format!("Scientia has no safe generator for @{name}"),
-                                }),
+                            _ => obligations.push(unsupported_obligation(
+                                &parent, model, declaration, name, generated,
+                                &format!("Scientia has no safe generator for @{name}"),
                             )),
                         }
                     }
@@ -529,6 +892,36 @@ fn make_obligation(
         unsupported,
         formalizable: None,
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn unsupported_obligation(
+    parent: &str,
+    model: &SemanticModel,
+    declaration: &crate::semantic::SemanticDeclaration,
+    name: &str,
+    generated: Vec<String>,
+    reason: &str,
+) -> VerificationObligation {
+    make_obligation(
+        parent,
+        &model.name,
+        declaration.span,
+        format!(
+            "unsupported verification annotation {}::{}",
+            model.name, declaration.name
+        ),
+        VerificationObligationKind::Unsupported { name: name.into() },
+        vec![],
+        generated,
+        "generation is structurally refused",
+        ToleranceClass::Exact,
+        VerificationEvidenceClass::Semantic,
+        Some(UnsupportedGeneration {
+            code: "VERIFY_UNSUPPORTED_ANNOTATION".into(),
+            reason: reason.into(),
+        }),
+    )
 }
 
 fn argument_label(model: &SemanticModel, expression: usize) -> String {
