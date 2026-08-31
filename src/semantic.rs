@@ -2463,6 +2463,14 @@ impl<'a> Elaborator<'a> {
                     cols: columns,
                 })
             }
+            // One-dimensional domains use axis-free differential shapes: `grad` maps
+            // Scalar -> Scalar and Vector -> Vector (see the `true` arms above), so divergence
+            // is its exact shape inverse — Scalar -> Scalar for a scalar flux chain like
+            // `div(d * grad(u))` (the model-44 gap recorded in GX-CONTRACTS C11.7/C11.8), and
+            // Vector -> Vector for componentwise vector-field balances (telegrapher-style).
+            (SemanticShape::Numeric(ValueShape::Scalar), false, 1) => {
+                SemanticShape::Numeric(ValueShape::Scalar)
+            }
             (SemanticShape::Numeric(ValueShape::Vector(extent)), false, 1) => {
                 SemanticShape::Numeric(ValueShape::Vector(*extent))
             }
