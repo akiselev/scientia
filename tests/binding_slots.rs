@@ -203,12 +203,21 @@ fn worked_example_c2_2_against_the_sinbad_corpus_file() {
         panic!("expected exactly one model");
     };
     validate_binding_slot_manifest(manifest).expect("slot ids are unique");
-    let unbound_providers = manifest
+    // Since GX-F5 the corpus file declares every provider it calls, so the four slots the
+    // C2.2 worked example showed as `Unbound` are now `Required` with typed signatures; the
+    // hermetic local-copy test above still exercises the original undeclared-provider shape.
+    let provider_slots = manifest
         .slots
         .iter()
-        .filter(|slot| slot.id.starts_with("provider/") && slot.status == SlotStatus::Unbound)
-        .count();
-    assert_eq!(unbound_providers, 4);
+        .filter(|slot| slot.id.starts_with("provider/"))
+        .collect::<Vec<_>>();
+    assert!(!provider_slots.is_empty());
+    assert!(
+        provider_slots
+            .iter()
+            .all(|slot| slot.status == SlotStatus::Required),
+        "corpus providers are declared since GX-F5; none should be Unbound"
+    );
 }
 
 /// Deliberately reaches into the sinbad checkout; see the doc comment on
