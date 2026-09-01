@@ -271,18 +271,26 @@ Verified locally on 2026-08-21:
 
 ## Next compiler work
 
-GX-A (see `sinbad/docs/simulation-vision/GX-GENERIC-EXECUTION-PLANE.md`):
+The GX-A/F program listed here previously is complete: `GX-A1/A6/A7`
+(`c43c8d6`), `GX-A2/A3` (`06d7b41`), `GX-F3/F4` (`3ef5b0b`), the 1-D
+differential-shape fix plus `GX-A4` `OperatorStructure` and `GX-A5` typed
+obligations `/2` with the `derive-verification` CLI (`935ad1f`/`41a2a78`/
+`1ac51c5`), and the exterior-facet Neumann lowering (`eb01cc4`). The GX exit
+gate passed on 2026-08-31 (Sinbad `a1402f2`); the C5.4/C6.1 shapes are
+corpus-verified against the real `25-stokes.res`/`13-mixed-darcy.res`
+(`207bb2e`). The audit bullets above describe the 2026-08-30 pre-GX state
+where a GX/F commit has not superseded them.
 
-1. `GX-A1` provider signature declarations, typed provider calls, and the
-   `scientia-binding-slots/1` manifest;
-2. `GX-A6` region/domain resolution from the equation domain and a
-   natural-boundary convention; `GX-A7` fixes (checked subtraction,
-   test-argument namespace, name sidecar, registry coverage, literal
-   canonicalization);
-3. `GX-A4` `OperatorStructure`; `GX-A5` typed obligations and
-   `derive-verification` CLI;
-4. `GX-A2/A3` property-model lowering with symbolic tangents through the
-   Resolvent RV1-C2/C3 projection, and chain-rule tangents in FC4/FC5.
+Next work is demand-pulled by E6/E7 (workspace `PLAN.md` §6):
+
+1. an additive `InfSup.blocks` optional pair field, only if a runtime
+   inf-sup checker (Methodus/Finitum) needs the pairing typed in-obligation
+   rather than re-derived from `OperatorStructure`;
+2. remaining form-derivation gaps (`FORM_BOUNDARY_PARTITION_REQUIRED`
+   partitions, opaque provider calls inside integrands) as executing cases
+   demand them;
+3. SV1-A: `DerivativeRequest` production from `.res` `observable`/`objective`
+   declarations for E7's inverse-Poisson derivative path.
 
 Scientia remains execution-free; evolve serialized schemas only with explicit
 versioning and receipt-chain validation.
