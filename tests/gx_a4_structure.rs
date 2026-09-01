@@ -3,9 +3,10 @@
 use quantitas::UnitRegistry;
 use scientia::{
     BlockClass, FormSymmetry, Linearity, NullspaceKind, StructurePropertyTangent,
-    compile_operator_system, compile_semantics, compile_variational_form,
-    derive_operator_structure, derive_operator_structure_for_system, derive_variational_form,
-    factor_operator, infer_form_requirements,
+    VerificationObligationKind, compile_operator_system, compile_semantics,
+    compile_variational_form, derive_operator_structure, derive_operator_structure_for_system,
+    derive_variational_form, derive_verification_profiles, factor_operator,
+    infer_form_requirements,
 };
 
 const POISSON_DIRICHLET: &str = r#"
@@ -178,4 +179,96 @@ fn asymmetric_advection_fixture_is_never_reported_symmetric() {
     let structure = derive_operator_structure(&form, &requirements, &factorization, None).unwrap();
     structure.validate().unwrap();
     assert_ne!(structure.form_symmetry, FormSymmetry::Symmetric);
+}
+
+/// Deliberately reaches into the sinbad checkout, matching the same opt-in convention as
+/// `tests/binding_slots.rs`'s `sinbad_corpus_dir` (see its doc comment): skipped whenever
+/// `SINBAD_WORKSPACE` is unset, so the hermetic gate never depends on it. Exercises E6's
+/// SV2-B corpus models -- `25-stokes.res` and `13-mixed-darcy.res` -- through the same
+/// `OperatorSystem`/`OperatorStructure`/`VerificationProfile` pipeline the inline `STOKES`
+/// fixture above already covers, so a regression in the real corpus grammar or providers is
+/// caught even when the inline fixture still passes.
+#[test]
+fn sinbad_saddle_point_corpus_models_derive_structure_and_inf_sup_obligations() {
+    let Some(dir) = sinbad_corpus_dir() else {
+        return;
+    };
+    let cases: &[(&str, &str, &[&str], &str)] = &[
+        (
+            "25-stokes.res",
+            "StokesFlow",
+            &["momentum", "incompressibility"],
+            "Taylor-Hood",
+        ),
+        (
+            "13-mixed-darcy.res",
+            "MixedDarcy",
+            &["darcy_law", "mass_balance"],
+            "RT0-P0",
+        ),
+    ];
+    for (file, model, equations, expected_pair) in cases {
+        let path = dir.join(file);
+        let source = std::fs::read_to_string(&path)
+            .unwrap_or_else(|error| panic!("reading {}: {error}", path.display()));
+        let compilation = compile_semantics(&source, &UnitRegistry::si_bootstrap())
+            .unwrap_or_else(|diagnostics| panic!("{file} failed to elaborate: {diagnostics:?}"));
+
+        let system = compile_operator_system(&compilation.semantic, model, equations)
+            .unwrap_or_else(|error| panic!("{file} failed to compile an operator system: {error}"));
+        let structure = derive_operator_structure_for_system(&system, None)
+            .unwrap_or_else(|error| panic!("{file} failed to derive operator structure: {error}"));
+        structure.validate().unwrap();
+        assert!(
+            structure.saddle_point,
+            "{file}: mixed velocity/flux-pressure system must derive saddle_point = true"
+        );
+        assert!(
+            structure
+                .nullspace_candidates
+                .iter()
+                .any(|candidate| candidate.kind == NullspaceKind::Constant),
+            "{file}: the pressure field must derive a constant nullspace candidate"
+        );
+
+        let profiles = derive_verification_profiles(&compilation);
+        let profile = profiles
+            .iter()
+            .find(|profile| profile.model == *model)
+            .unwrap_or_else(|| panic!("{file}: no verification profile for model {model}"));
+        profile.validate().unwrap();
+        let pair = profile
+            .obligations
+            .iter()
+            .find_map(|obligation| match &obligation.kind {
+                VerificationObligationKind::InfSup { pair } => Some(pair.as_str()),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("{file}: no InfSup obligation derived from @inf_sup"));
+        assert_eq!(pair, *expected_pair);
+        assert!(
+            !profile.obligations.iter().any(|obligation| matches!(
+                &obligation.kind,
+                VerificationObligationKind::Unsupported { name } if name == "inf_sup"
+            )),
+            "{file}: @inf_sup must not fall back to Unsupported"
+        );
+    }
+}
+
+/// The Sinbad corpus directory, only when the workspace coordinator opted in through
+/// `SINBAD_WORKSPACE`; `None` skips the cross-repository sweep in hermetic runs. Mirrors
+/// `tests/binding_slots.rs`'s helper of the same name.
+fn sinbad_corpus_dir() -> Option<std::path::PathBuf> {
+    let Some(workspace) = std::env::var_os("SINBAD_WORKSPACE") else {
+        eprintln!("skipping: SINBAD_WORKSPACE is not set; corpus sweep is opt-in");
+        return None;
+    };
+    let dir = std::path::PathBuf::from(workspace).join("sinbad/physics/corpus");
+    assert!(
+        dir.is_dir(),
+        "SINBAD_WORKSPACE is set but {} is not a directory",
+        dir.display()
+    );
+    Some(dir)
 }
