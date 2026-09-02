@@ -291,6 +291,23 @@ Next work is demand-pulled by E6/E7 (workspace `PLAN.md` §6):
    demand them;
 3. SV1-A: `DerivativeRequest` production from `.res` `observable`/`objective`
    declarations for E7's inverse-Poisson derivative path.
+4. SC composition (design: `sinbad/ARCHITECTURE.md`; nothing landed). Runner-free
+   and E7-parallel first: `scientia-operator-structure/2` with per-block symmetry,
+   per-pair transpose relations and a signed-graph `sign_gauge` (today
+   `form_symmetry` is an unconditional `Unknown` for every multi-block system, so
+   this is new analysis; it replaces the case-data `equation_sign`); defined
+   `source` slots classified `ModelDefined` (today `source/joule` on 08 is
+   `Required ExternalValue`); `SourceLocator { module, span }`; and the
+   natural-boundary trace-shape refusal (`TENSOR_SHAPE: normal trace requires a
+   vector or rank-two tensor`) that stops 08/16/18/27/45 from factoring
+   (prerequisite batch P). Then SC-W1: scoped by-reference imports with
+   `GlobalDeclId` replacing GX-F4's flatten-by-name, `system`/`instance`/`bind`,
+   a `model` compiled as the implicit one-instance system,
+   `scientia-operator-system/2` keyed by system-level ids with an `OriginMap`,
+   and kernel-level bind composition (no expression rewriting). SC-W2:
+   `connector`/`port`, the `Open` boundary-term disposition introducing port
+   unknowns in the dual trace space, `oriented by`, per-stratum matching and
+   coverage refusals. Contract changes are recorded as GX-CONTRACTS C12 first.
 
 Scientia remains execution-free; evolve serialized schemas only with explicit
 versioning and receipt-chain validation.

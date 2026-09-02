@@ -22,6 +22,12 @@ Each arrow is a compiler pass with diagnostics, source provenance, and an eviden
 changes mathematical form. These are successive artifacts, not interchangeable frontends or
 temporary representations.
 
+Planned, not landed: the SC composition layer designed in `sinbad/ARCHITECTURE.md` inserts a
+`ScientificSystem` between the per-model semantic arena and the operator artifacts — instances of
+imported models, `bind`/`connect`, connector ports as open boundary unknowns, system-level ids with
+an origin map — while every per-model FC2–FC5 artifact stays as it is and is reused by digest. A
+bare `model` becomes the implicit one-instance system, so there is one compile path.
+
 ## Repository boundaries
 
 ### Quantitas

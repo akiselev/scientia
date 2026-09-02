@@ -22,6 +22,8 @@ Do not weaken tests, semantic gates, evidence requirements, or ownership boundar
 - Scientia may depend on Quantitas, Resolvent, and Malleus. Resolvent and Malleus must never
   depend on Scientia.
 - Keep meshes, concrete elements/DOFs, global operators, runtime state, and solver policy out of
-  this repository.
+  this repository. When `case`/`run`/`verify` strata arrive in `.res` (SC, `sinbad/ARCHITECTURE.md`
+  §3.1), Scientia parses them as opaque declaration trees with source maps; their vocabulary,
+  meaning, and refusal codes are Sinbad's.
 - Mathematical transformations need explicit provenance and independent validation; removed code
   is available in Git history but is not an oracle.
