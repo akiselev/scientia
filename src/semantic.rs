@@ -99,6 +99,19 @@ impl SymbolId {
     pub const fn generated_for(declaration: DeclarationId) -> Self {
         Self(Self::GENERATED_BASE + declaration.0)
     }
+
+    /// Reserved sub-range bit for generated ids keyed on an *expression* rather than a
+    /// declaration, so [`SymbolId::generated_for`] and [`SymbolId::generated_for_expression`]
+    /// never collide within one model.
+    pub const GENERATED_EXPRESSION_BIT: u32 = 0x4000_0000;
+
+    /// Batch P: the generated symbol id for a compiler-synthesized property capture keyed on
+    /// the provider-call expression it names (`derive_variational_form_for` lifts every
+    /// provider call inside a residual or boundary value into such a capture). Distinct call
+    /// sites always receive distinct ids; the same arena node always receives the same id.
+    pub const fn generated_for_expression(expression: ExprId) -> Self {
+        Self(Self::GENERATED_BASE | Self::GENERATED_EXPRESSION_BIT | expression.0)
+    }
 }
 
 // GX-A1 (C1.2) landed provider signatures/calls as "/4". GX-A2's exact-literal change

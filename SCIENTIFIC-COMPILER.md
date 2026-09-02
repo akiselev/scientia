@@ -89,8 +89,9 @@ expressions and adds only form-specific organization:
 
 Strong-form derivation residualizes equations, selects or accepts an explicit physical field for
 the test space, applies integration by parts only when that space supports the resulting
-derivative, and records boundary terms as retained, substituted, or eliminated by an essential
-condition. The receipt explicitly assumes that its resolved exterior regions partition the domain
+derivative, and records boundary terms as naturally closed (zero flux datum substituted, strong
+flux expression recorded, no integral emitted), substituted by a Neumann datum, or eliminated by
+an essential condition. The receipt explicitly assumes that its resolved exterior regions partition the domain
 boundary; Finitum must discharge that assumption against topology. A Neumann value may substitute
 only one integrated flux per region and field until the language can express per-term
 correspondence. Ambiguous test spaces or fluxes, missing boundary partitions, invalid derived

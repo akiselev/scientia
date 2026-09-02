@@ -1294,6 +1294,16 @@ impl Lowerer<'_> {
 
     fn shape(&self, id: ExprId, context: EvalContext) -> Result<Vec<usize>, TensorCompileError> {
         let expression = self.expression(id)?;
+        // Batch P: same redistribution rule as FC3's `collect_evaluations_inner` -- a normal
+        // mapping stays only on a node whose value carries the contracted axis.
+        let context = EvalContext {
+            trace_mapping: crate::requirements::normal_trace_child_mapping(
+                expression,
+                context.derivative,
+                context.trace_mapping,
+            ),
+            ..context
+        };
         match &expression.kind {
             SemanticExprKind::Symbol { symbol } => {
                 let evaluation = context.binding(self.default_site);
@@ -1359,7 +1369,9 @@ impl Lowerer<'_> {
                     crate::semantic::SemanticShape::Numeric(ValueShape::Scalar)
                 ))
         {
-            return Ok(shape);
+            // Batch P: the declared node shape is the value's shape; a normal mapping on the
+            // node contracts one axis of it.
+            return trace_shape(shape, context.trace_mapping);
         }
         Ok(match &expression.kind {
             SemanticExprKind::Number { .. } | SemanticExprKind::String { .. } => Vec::new(),
@@ -1405,6 +1417,15 @@ impl Lowerer<'_> {
         context: EvalContext,
     ) -> Result<TensorScalarExpr, TensorCompileError> {
         let expression = self.expression(id)?.clone();
+        // Batch P: see `shape`.
+        let context = EvalContext {
+            trace_mapping: crate::requirements::normal_trace_child_mapping(
+                &expression,
+                context.derivative,
+                context.trace_mapping,
+            ),
+            ..context
+        };
         match expression.kind {
             // GX-F3: elaboration canonicalizes every unit-bearing literal to SI (see
             // `semantic::Elaborator::canonicalize_number_literal`), so `value` is already

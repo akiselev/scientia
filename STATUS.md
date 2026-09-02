@@ -1,10 +1,12 @@
 # Scientia status
 
-Updated: 2026-08-30
+Updated: 2026-09-01
 
 Branch: `master`
 
-Milestone: SV0-A1 verification contract and minimum SV1-A/G0C derivative vocabulary
+Milestone: W7 Scientia lane (workspace `PLAN.md` §6 "W7"): prerequisite batch P landed;
+runner-free SC packages, SV1-A `DerivativeRequest` production, and SC-W1 composition follow in
+this order, each recorded here as it lands.
 
 ## Role
 
@@ -15,299 +17,149 @@ local mathematical artifacts, and lowers local work into Malleus-owned structure
 Quantitas owns dimensions, quantity kinds, units, and registries. Resolvent owns consumer-neutral
 exact algebra and symbolic differentiation. Malleus owns local kernel IR and execution. Finitum
 owns concrete discretization/global operators. Krasis owns coupled runtime state. Methodus owns
-numerical algorithms. Sinbad owns product orchestration.
-Solverang separately owns generalized constraint solving over Methodus; it is
-not part of Scientia's compiler or simulation execution dependency graph.
+numerical algorithms. Sinbad owns product orchestration. Solverang owns generalized constraint
+solving over Methodus and is not part of the simulation execution dependency graph.
 
 ## Implemented
 
-- Recovering `.res` parser, canonical formatter, byte-precise expression/reference spans,
-  deterministic module resolution, and presentation-invariant source digest.
-- One typed `SemanticModel` arena with stable domain, region, symbol, expression, and declaration
-  identities; resolved roles and references; shapes and axes; Quantitas dimensions/kinds/units;
-  domain frames; typed declaration payloads; and presentation-invariant semantic digest. The
-  typed-declaration wire shape is `scientia-semantic/3`; variational forms are
-  `scientia-variational-form/4` and record the physical source of generated test spaces.
-- `scientia-verification-profile/1` deterministically derives typed dimension, invariant,
-  manufactured-solution, convergence, limiting-case, and applicable derivative obligations from
-  one compiled semantic model. Obligation identity excludes presentation spans and remains stable
-  across declaration ordering; every obligation retains its source span and explicit tolerance
-  class, evidence class, applicability, expected relation, and unsupported-generation reason.
+- Recovering `.res` parser, canonical formatter, byte-precise spans, deterministic module
+  resolution (`ModuleSource`/`resolve_modules`, GX-F4 provider-only `use` import), and
+  presentation-invariant source digest.
+- One typed `SemanticModel` arena (`scientia-semantic/5`): stable domain/region/symbol/expression/
+  declaration ids, resolved roles, shapes/axes, Quantitas dimensions/kinds/units with SI literal
+  canonicalization, frames, provider signatures and typed provider calls (C1), and a
+  presentation-invariant semantic digest. `compile_semantics` is the FC1 boundary.
+- `scientia-binding-slots/1` (C2/C11.1): every case-bindable slot with typed identity and
+  `Required | Unbound | ModelDefined` status; CLI `slots`.
+- `scientia-verification-profile/1` and `scientia-verification-obligation/2` (C6.1): typed
+  dimension, invariant, manufactured-solution (exact `ExprId`), convergence, temporal-convergence,
+  conservation, patch, rigid-body, limiting-case, inf-sup, and derivative-Taylor obligations;
+  CLI `derive-verification`.
 - `scientia-derivative-request/1` types objectives, observables, controls, design variables,
-  active/frozen sets, derivative products, partial/total and continuous/discrete conventions,
-  evaluation state, and real/complex meaning. The fixed-topology shape slice requires geometry
-  revision, topology stratum, stable boundary selection, normal/measure variation choices, and a
-  smooth/piecewise/event/unsupported disposition. Design/control namespaces are unique;
-  active/frozen sets exactly partition every declared input, and shape requests require an active
-  design variable rather than merely an active control. Directional checks declare symmetric step
-  sequencing and second-order truncation before roundoff rather than claiming roundoff-only
-  tolerance. Missing, blank, whitespace-only, or inconsistent disposition and boundary meaning is
-  refused.
-- Stable structured diagnostics with exact spans for malformed syntax, imports, domains, names,
-  units, quantity kinds, roles, shapes, axes, dimensions, and frames.
-- `compile_semantics` is the complete FC1 library boundary. CLI `check`, `inspect`, `freeze`, and
-  all analysis/form commands require it; `elaborate` emits the typed arena directly.
-- Direct Quantitas quantity/unit types and validation; no internal quantity representation exists.
-- Property tables/expressions, derivative contracts, constitutive semantics, coupling graphs,
-  time/state semantics, and evidence profiles.
-- Scientific property differentiation delegates exact algebra to Resolvent and explicitly refuses
-  unsupported scientific expression forms; Scientia retains scientific spans and diagnostics.
-- Structural incidence, matching, SCC/BLT, tearing, alias, and DAE planning projected directly
-  from `ScientificModel`; incidence follows model-defined value, property, and constitutive chains
-  to the same transitive field dependencies reported by coupling analysis.
-- `VariationalForm` compilation consumes only `SemanticModule`; arguments, captures, measures, and
-  integrands retain arena IDs and typed roles instead of source-name keys.
-- Strong equations derive into residual forms with generated typed test arguments, physical-field
-  captures, space-aware integration by parts, and stable capability refusals when test selection,
-  boundary partitions, curl orientation, or Robin flux meaning is not available.
-- Cell, exterior/interior-facet, interface, and point sides are explicit. Differential,
-  contraction, tensor/facet trace, jump, average, normal-component, and conjugation operations are
-  typed semantic nodes; ambiguous two-sided field access is rejected.
-- Form receipts record residualization, test multiplication, integration by parts, boundary-data
-  substitution, an explicit complex convention, typed boundary-partition/test-trace assumptions,
-  and retained/substituted/eliminated boundary terms. Multiple flux terms cannot consume the same
-  Neumann datum without explicit correspondence.
-- Mixed strong equations select test spaces from typed result shape and differentiated dependency
-  structure. Gradient terms integrate against H(div) divergence, curl terms integrate against
-  H(curl) curl with oriented tangential traces, and deferred source/flux shapes are refined from
-  the selected equation row without changing the canonical semantic arena.
-- The deterministic form interpreter evaluates scalar, complex, vector/tensor, differential,
-  contraction, side/trace, indexing, and common scalar operations from caller-supplied point data.
-  Caller-supplied weights are accumulated without taking ownership of quadrature traversal.
-  `required_evaluations` exposes the expression/evaluation bindings needed by an integral.
-- Realization-neutral `LocalFormProgram` factorization preserves test/trial/field/coefficient/value
-  roles and required value/gradient/time-derivative/trace evaluations.
-- Form, local-program, and kernel-lowering artifacts have schema-versioned, span-independent
-  digests and receipts linking each artifact to its parent.
-- Mesh-free `FormRequirements` inference covers H1, L2, product/mixed, Hcurl, Hdiv, DG, and trace
-  spaces; abstract element family/order/shape; H1/L2/broken and Piola pullbacks; tangential,
-  normal, and two-sided orientation; basis evaluation sites; geometry preprocessing; conservative
-  quadrature intent; essential constraints; and exterior-boundary partition requirements.
-- Requirement inference expands model-defined value/property/constitutive dependency chains to
-  recover hidden physical-field spaces and derivative evaluations. Inputs explicitly distinguish
-  basis-backed values, external values, model-defined values/properties, and model-defined
-  constitutive preprocessing, so non-space symbols are never presented as basis data.
-- Integral expression signatures are normalized without arena IDs or spans and grouped only when
-  measure/domain/region, output type, inputs/evaluations, geometry, quadrature, and integrand all
-  match. The mathematical requirement digest is invariant to integral, domain, and field
-  declaration order, while its receipt retains the exact parent form digest.
-- Stable `REQ_*` refusals cover non-scalar axes, cross-domain measures, invalid region kinds,
-  incompatible space continuity/value shapes/differentials/normal traces, and incompatible
-  essential boundary data.
-- Scalar point-QFunction lowering returns Malleus IR with a lowering receipt. Finitum owns
-  quadrature selection/traversal; the empty Malleus iteration domain means one point invocation.
-- `factor_operator` consumes a typed form and its digest-linked `FormRequirements`, retaining one
-  indexed `TensorProgram` per integral with explicit shapes, cell/facet sides, real scalar
-  semantics, free component axes, and canonical sum-reduction axes.
-- Symbolic differentiation with respect to test evaluations produces basis-dual
-  `QFunctionProgram` outputs. Operator artifacts factor gather/restriction, basis actions,
-  external/model-defined preprocessing, geometry, point functions, quadrature weight, basis
-  transpose, scatter, and essential-constraint stages without concrete mesh or DOF types.
-- Symbolic directional differentiation produces JVP QFunctions with receipts naming the primal,
-  active and frozen inputs, runtime evaluation point, complex convention, stateless semantics,
-  construction method, and algebraic evidence.
-- Tensor input shapes are resolved by the complete symbol/evaluation/site/mapping binding rather
-  than evaluation declaration order. Invalid differential base shapes and active non-basis
-  inputs are refused before artifact generation and again at the interpreter boundary.
-- Deterministic QFunction and caller-supplied element-factorization interpreters implement the FC4
-  reference semantics. An independent P1 triangle fixture validates generated Poisson element
-  residuals and JVPs against its analytic tensor and a directional finite difference.
-- `lower_operator_kernels` lowers each accepted FC4 QFunction output into a digest-linked Malleus
-  `StructuredModule` containing primal, state-JVP, state-VJP, and frozen-input parameter-JVP
-  kernels. Tensor free/reduction axes become fixed structured iteration domains, tensor input
-  indices become affine maps, and reduction outputs carry explicit additive effects.
-- Each FC5 bundle records QFunction input-to-operand bindings, derivative modes/purposes/evidence,
-  numeric policy, source factorization/primal/symbolic-JVP digests, integral/output identity, and
-  the exact kernel index for each product. Malformed shapes, unsupported non-enclosing reduction
-  structure, precision mismatch, and broken derivative receipt chains are refused.
-- One logical QFunction input may bind multiple Malleus operands when tensor contraction accesses
-  it through distinct affine index vectors; derivative contracts bind every access while receipts
-  retain each logical input once.
-- FC5 bundles retain their direct typed handoff into Finitum, and FC11 now also gives complete
-  `StructuredModule`, structured bundle, `MethodProgram`, and `OperatorSystem` artifacts stable
-  Serde round trips. Decoded Malleus modules are structurally revalidated before execution, while
-  executable schedules remain rebuilt downstream data.
-- All four products execute with Malleus's deterministic interpreter. The FC5 Poisson gate covers
-  three triangle geometries against independent analytic element tensors, Malleus-vs-FC4 JVP
-  agreement, directional finite differences, a VJP adjoint dot product, and property/source
-  parameter derivatives. No named-physics operation exists in the lowering or Malleus.
-- `OperatorSystem` compiles derived equations or authored forms through requirements,
-  factorization, and complete structured-kernel bundles. Typed test-space receipts own block rows,
-  active QFunction bindings own block columns, and the system digest covers every artifact link.
-  Repository-local FC8 gates compile elasticity, Stokes, Darcy, split-complex Maxwell, and a
-  two-sided DG facet form through the same contract.
-- Five digest-linked `MethodProgram` compilers consume the existing typed semantic arena for
-  conservation-law/FV, structured-stencil/FD, network DAE, particle, and boundary-integral
-  families. They retain typed source identities, Quantitas-backed state types, and expression
-  arenas while their receipts explicitly bypass `VariationalForm`.
-- FV numerical flux and FD stencil requests lower to validated affine Malleus point kernels;
-  concrete topology, matrices, pairs, and boundary quadrature remain downstream-owned. Stable
-  `METHOD_*` errors refuse incompatible domains, equation structure, shapes, and kernel requests.
-- One `scientia` CLI for check, format, parse, inspect, freeze, explain, coupling, structural
-  analysis, forms, requirements, and operators. Multi-model modules require explicit selection;
-  form/equation commands accept `Model:item` and model-wide commands accept `Model`.
+  active/frozen sets, products, conventions, and the fixed-topology shape slice; there is no
+  producer from `.res` yet (SV1-A, this wave).
+- `scientia-operator-structure/1` (C5.4): linearity, form symmetry, block coordinates/classes,
+  saddle-point flag, nullspace candidates, property dependence, time structure; CLI `structure`.
+- Structural incidence, matching, SCC/BLT, tearing, alias, and DAE planning; coupling graphs.
+- `VariationalForm` (`scientia-variational-form/4`): authored forms and derived strong equations
+  with generated typed test arguments, physical-field captures, space-aware integration by parts,
+  and receipts. Boundary terms are `EliminatedByEssentialCondition`, `Substituted` (Neumann datum
+  through the external-input path), or **`NaturallyClosed { flux }`** (batch P, below).
+- FC3 `FormRequirements`: H1/L2/Hcurl/Hdiv/DG/trace spaces, pullbacks, orientations, evaluation
+  sites and trace mappings, geometry preprocessing, quadrature intent, essential constraints,
+  boundary partitions, canonically grouped integrals, and `REQ_*` refusals.
+- FC4 `TensorProgram`/`QFunctionProgram`/`OperatorFactorization` with symbolic test
+  differentiation, directional JVPs, and GX-A3 chain-rule property tangents; deterministic
+  reference interpreters validated against an independent P1 Poisson fixture.
+- FC5 `lower_operator_kernels`: complete Malleus primal/JVP/VJP/parameter bundles with receipts;
+  GX-A2 property kernels (`scientia-property-kernel/1`) through the Resolvent projection.
+- FC8 `OperatorSystem` (`scientia-operator-system/1`) for multi-equation systems; FC10
+  `MethodProgram` compilers for FV/FD/network-DAE/particle/boundary-integral families; FC11 Serde
+  round trips for every artifact.
+- One `scientia` CLI; multi-model modules require explicit `Model:item` selection.
+
+### Batch P (2026-09-01): natural boundaries, normal traces, provider calls in integrands
+
+- **Natural closure.** A boundary region with no boundary condition for the equation's test
+  field (including the GX-A6 implicit whole-boundary region) substitutes the zero flux datum:
+  no exterior-facet integral is emitted, the receipt records
+  `BoundaryTermDisposition::NaturallyClosed { flux: ExprId }` (the signed strong normal-flux
+  expression) and `FormTransformation::SubstituteNaturalClosure { region }`. The former
+  `Retained { integral_index }` state-computed facet integral is deleted: realizing it would
+  cancel the integration by parts and enforce nothing, and Finitum's system path refused it
+  anyway. A nonzero flux must be declared `neumann`.
+- **Normal-trace redistribution (FC3 and FC4 agree).** A `Normal` trace mapping stays on the
+  operand carrying the contracted axis and degenerates to a plain trace on a scalar factor
+  (`n·(k grad T) = k (n·grad T)`); an opaque model-defined symbol under a normal trace is
+  evaluated at the facet as one value and contracted with the normal, so its definition's leaves
+  are plain traces. Inline products of two axis-carrying operands refuse
+  `REQ_NORMAL_TRACE_NONLINEAR`; inline computed tensors (contraction, call, index, vector
+  literal) under a normal trace refuse `REQ_NORMAL_TRACE_UNSUPPORTED` (name the flux in a
+  `constitutive`). `TENSOR_SHAPE: normal trace requires a vector or rank-two tensor` no longer
+  occurs on any corpus equation.
+- **Provider-call lifting.** Every `ProviderCall` inside a derived residual term or boundary
+  value becomes a compiler-synthesized property capture (`SymbolId::generated_for_expression`,
+  `FormCapture.definition` = the call) bound exactly like a named `property`: External
+  `ModelDefinedProperty` input, GX-A3 chain-rule tangent when scalar and differentiable, frozen
+  coefficient otherwise. Generalizes the GX-facet bare-boundary-value rule. Authored `form`
+  integrands are not lifted (they are compiled verbatim).
+- Corpus effect (`tests/gx_facet_boundary.rs` sweep, `SINBAD_WORKSPACE` set): operator
+  factorizations 45/128 → **97/128** (118 forms, 107 requirements, 56 equations with a naturally
+  closed boundary). 08 (both), 16 (all three), 18 (both), 27 `energy`, 45 `fluid_energy`/
+  `solid_energy`/`fluid_momentum` factor. Remaining failures are unrelated to this package:
+  pressure rows with no test space (`incompressibility`), Robin laws (33), cross-domain measures
+  (50), 4-vector integrands (38), rank-mismatched contractions (44, 49), `sym_grad` of a scalar
+  momentum field (29).
 
 ## Removed
 
-- The pre-form expression/context/system pipeline and its RSL, LaTeX, and Lean frontends.
-- Form/discrete/operator/backend types that duplicated the new compiler direction.
-- Reference FEM implementations and scientific bridge layers.
-- Old comparison tooling, runtime plans, diagnostic logs, and the internal quantity crate.
-- The exact-CAS roadmap/research/ADR corpus that no longer described this product.
-
-Git history is the archive. None of the removed implementation is an acceptance oracle.
+The pre-form pipeline and its frontends, duplicate form/discrete/operator/backend types,
+reference FEM implementations, bridge layers, comparison tooling, runtime plans, the internal
+quantity crate, and the exact-CAS ADR corpus. Git history is the archive; none of it is an
+acceptance oracle.
 
 ## Validation
 
-Verified locally on 2026-08-21:
+Verified locally on 2026-09-01 (batch P tree):
 
-- `cargo fmt --all -- --check` -- passed.
-- `cargo check --locked --workspace --all-targets` -- passed.
-- `cargo clippy --locked --workspace --all-targets -- -D warnings` -- passed.
-- `cargo test --locked --workspace --all-targets` -- passed: 87 tests, 0 failed.
-- `RUSTDOCFLAGS='-D warnings' cargo doc --locked --workspace --no-deps` -- passed.
-- `cargo test --locked --workspace --doc` -- passed.
-- `git diff --check` -- passed.
-- `cargo run --quiet --bin scientia -- check` over all 50 Sinbad corpus models -- passed: 50 of
-  50 parsed and elaborated.
-- `derive-form` passed for Poisson, transient diffusion, nonlinear heat, linear elasticity, and
-  both Stokes equations; the same set is covered by the FC2 integration gate.
-- `derive-requirements` passed for Poisson, transient diffusion, nonlinear heat, linear
-  elasticity, and both Stokes equations from the Sinbad corpus; the same set is covered by the FC3
-  integration gate.
-- Stokes momentum requirements include velocity H1/order-2 space and basis-backed
-  `symmetric_gradient`, with viscosity/strain/stress typed as model-defined preprocessing.
-- The electrothermal corpus model's coupling graph includes Joule-source and constitutive
-  dependencies, and structural analysis returns a nonsingular coupled 2x2 schedule.
-- A three-model CLI fixture passes qualified form, requirement, coupling, structural, and explain
-  selection plus authored/derived operator selection, and refuses ambiguous unqualified item
-  selection.
-- `derive-operator` passes on Sinbad's Poisson corpus model and emits digest-linked tensor,
-  primal-QFunction, JVP-QFunction, and operator-factorization artifacts.
-- The repository-local FC4 Poisson gate passes an independent analytic P1 triangle residual and
-  element-matrix JVP comparison plus a directional finite-difference JVP check.
-- The repository-local FC5 gate validates complete four-kernel Malleus modules and executes
-  generated Poisson primal/JVP/VJP/parameter products across three element geometries; analytic
-  tensors, FC4 symbolic JVPs, finite differences, and an adjoint identity agree.
-- The repository-local FC8 gate compiles elasticity, Stokes, Darcy, and split-complex Maxwell
-  operator systems plus a two-sided DG facet form into validated Malleus bundles. Stokes exposes
-  three nonzero block coordinates, Darcy exposes H(div)-L2 rows, Maxwell exposes four coupled
-  split-complex coordinates, and minus/plus trace inputs remain explicit.
-- The repository-local FC10 gate compiles all five method families from independent local source
-  fixtures, proves distinct artifact identities and nonvariational receipts, executes FV/FD affine
-  kernels with Malleus, and checks domain/stencil refusals.
-- FC11 round-trip gates serialize and deserialize a complete FV method program, a Poisson
-  primal/JVP/VJP/parameter bundle, and a mixed Stokes operator system, then revalidate every nested
-  Malleus module.
-- Scientia tests contain no compile-time or runtime path into Sinbad's product corpus; standalone
-  validation uses only repository-local fixtures plus the declared Quantitas/Malleus dependencies.
-- `cargo run --quiet --bin scientia -- check examples/nonlinear_heat.res` -- passed.
-- `cargo run --quiet --bin scientia -- structural examples/nonlinear_heat.res` -- passed with
-  one explicit structural block.
-- The SV0 gate derives the same Poisson obligation/profile identities after declaration
-  reordering. The minimum SV1 shape-request gate accepts a revisioned fixed-topology annulus
-  request and refuses missing geometry revision, unbound/colliding derivative inputs, incomplete
-  objectives, and topology-event requests without a basis.
+- `cargo fmt --all -- --check`, `cargo clippy --all-targets -- -D warnings`,
+  `RUSTDOCFLAGS='-D warnings' cargo doc --no-deps` -- passed.
+- `cargo test` (lib + every integration binary, run per binary with `SINBAD_WORKSPACE` set) --
+  passed: 152 tests, 0 failed (24 lib, 128 integration across 24 binaries including the new
+  `tests/p_natural_closure.rs`, 5 tests).
+- Corpus sweep: 50/50 elaborate; 97/128 operator factorizations (see batch P above).
+- The GX exit gate passed on 2026-08-31 (Sinbad `a1402f2`); C5.4/C6.1 shapes are corpus-verified
+  against `25-stokes.res`/`13-mixed-darcy.res` (`207bb2e`).
 
 ## Cross-repository contract
 
-- Resolvent path: `../resolvent`, tested against the completed RV0 commit
-  `f686190bda1ba66882a3b06a2f1dc3076cdfe988`.
-
-- Quantitas path: `../quantitas`, validated at
-  `734d78cd6ff516afee54201bc70cd59fd34e67e3`; API types used directly include `Dimension`,
-  `Quantity`, `QuantityLiteral`, `QuantityKindId`, `UnitId`, and `UnitRegistry`.
-- Malleus path: `../malleus`, validated at
-  `09e27a6a23a6a5eab6f881ac0bec9db23046d58e`; Scientia constructs Malleus modules, operands,
-  affine maps, expressions, derivative requests, statements, and numeric policies directly.
+- Resolvent path `../resolvent` (RV0 `f686190b`); Quantitas path `../quantitas` (`734d78cd`;
+  `Dimension`, `Quantity`, `QuantityLiteral`, `QuantityKindId`, `UnitId`, `UnitRegistry`);
+  Malleus path `../malleus` (Scientia constructs Malleus modules, operands, affine maps,
+  expressions, derivative requests, statements, and numeric policies directly; the lockfile
+  follows Malleus's W7 dependency additions).
 - Public downstream sequence: `compile_variational_form`/`derive_variational_form` ->
-  `infer_form_requirements` -> `factor_operator` -> `lower_operator_kernels`. The existing narrow
-  scalar path remains `factor_local_integral` -> `lower_local_program`, with
-  `LoweredKernel { kernel, receipt }` rather than a bare `StructuredKernel`.
-- Sibling downstream sequences start with the family-specific `compile_*_method` functions and
-  produce `MethodProgram` directly; Finitum consumes that artifact without form requirements or
-  FEM operator factorization.
-- Finitum maps `LocalIterationContract::QuadraturePoint` across selected elements and quadrature
-  points in its landed FC6 reference realization. Any later fixed-axis batching remains
-  realization-owned and must preserve point-QFunction semantics; see `ITERATION-OWNERSHIP.md`.
+  `infer_form_requirements` -> `factor_operator` -> `lower_operator_kernels`; sibling families
+  start at `compile_*_method` and produce `MethodProgram`.
+- Finitum maps `LocalIterationContract::QuadraturePoint` across elements and quadrature points;
+  fixed-axis batching stays realization-owned (`ITERATION-OWNERSHIP.md`).
+- **Batch P consumer note (Finitum, Sinbad):** a naturally closed boundary produces no facet
+  integral, so 08-shaped models realize with cell integrals only; the `BoundaryPartitionRequirement`
+  for the implicit region is still emitted and must still be discharged against topology. A
+  `QFunctionInput` whose `binding.symbol.is_generated()` and whose `source` is
+  `ModelDefinedProperty { definition }` is a lifted provider call; its data binding is the
+  provider's `provider/<name>` slot, unchanged.
 
-## Known limits recorded by the 2026-08-30 workspace audit (tree `0f8d7d6`)
+## Known limits
 
-- Provider calls such as `thermal_conductivity(T)`, `exact_u()`, or
-  `prescribed_flux(t)` are unregistered and untyped: they elaborate to a
-  deferred `Intrinsic` call with no arity, unit, or shape check, and there is
-  no binding-slot manifest a consumer can use by identity. An unknown bare
-  name is an error; an unknown function is silently accepted.
-- The property/provider vocabulary (`PropertySignature`, `PropertyModel`,
-  `PropertyTable`, `ConstitutiveLaw`, …), all of `src/evidence.rs`, and
-  `DerivativeRequest` have no producer from `.res` and no consumer; the
-  Resolvent dependency is reachable only through the dead property path, and
-  `algebra.rs` maps comparison operators to the constant `0` without a
-  diagnostic.
-- Every emitted JVP freezes model-defined properties: the tangent is a
-  frozen-coefficient (Picard) tangent, not the Newton Jacobian, and `dk/dT`
-  is not obtainable from any artifact. The derivative receipt names the
-  frozen inputs truthfully.
-- Verification obligations are six kinds whose requirements are prose
-  strings: no exact-solution `ExprId`, no tolerance values, no ladder, no
-  conservation/patch/rigid-body/temporal-convergence kinds; corpus annotations
-  outside `@mms`/`@limiting_case`/`@validation` are refused. No CLI exposes
-  `derive_verification_profiles`.
-- No symmetry, definiteness, nullspace, or linearity vocabulary exists for
-  solver selection; method-family selection is caller-named.
-- FC3+ artifacts are name-free; generated test-argument `SymbolId`s are
-  `model.symbols.len()` for every form and collide across `OperatorSystem`
-  blocks.
-- Corpus coverage: 50/50 elaborate, 69/128 equations derive a form, 61/128
-  requirements, 35/128 operator factorizations. 49 equations fail
-  `FORM_BOUNDARY_PARTITION_REQUIRED` because a region's domain is set only
-  from a boundary-condition target field; 18 fail on an opaque provider call
-  inside an integrand.
-- Numeric literals are `f64`; unit-bearing literals are never rescaled and are
-  refused at FC4; `si_bootstrap` knows five units and three quantity kinds.
-- Non-Cartesian coordinate systems validate and are then ignored downstream.
-- `src/tensor.rs` contraction rank check has an unguarded `usize`
-  subtraction (panics in debug on `40-induction-machine-dq.res`).
+- `DerivativeRequest` has no `.res` producer (SV1-A, this wave); `evidence.rs` has no consumer.
+- FC4 JVPs inline only scalar properties whose definition wraps differentiable provider calls;
+  vector-valued provider outputs (`convect`, `gravity_vector`) and constitutive laws stay frozen
+  (Picard) coefficients, named truthfully in the derivative receipt.
+- Generated test-argument and lifted-capture `SymbolId`s are per-declaration/per-expression
+  (`GENERATED_BASE` high bit) and never index `model.symbols`.
+- `form_symmetry` is `Unknown` for every multi-block `OperatorSystem` (the `/2` sign gauge is the
+  next package). `[system].equation_sign` remains Sinbad case data until then.
+- Non-Cartesian coordinate systems validate and are then ignored downstream. `si_bootstrap`
+  coverage is what the corpus needs, no more.
+- `use` imports resolve provider declarations only (GX-F4 flatten-by-name); models are not
+  importable until SC-W1's `GlobalDeclId` import lands.
 
-## Next compiler work
+## Next compiler work (W7 lane order)
 
-The GX-A/F program listed here previously is complete: `GX-A1/A6/A7`
-(`c43c8d6`), `GX-A2/A3` (`06d7b41`), `GX-F3/F4` (`3ef5b0b`), the 1-D
-differential-shape fix plus `GX-A4` `OperatorStructure` and `GX-A5` typed
-obligations `/2` with the `derive-verification` CLI (`935ad1f`/`41a2a78`/
-`1ac51c5`), and the exterior-facet Neumann lowering (`eb01cc4`). The GX exit
-gate passed on 2026-08-31 (Sinbad `a1402f2`); the C5.4/C6.1 shapes are
-corpus-verified against the real `25-stokes.res`/`13-mixed-darcy.res`
-(`207bb2e`). The audit bullets above describe the 2026-08-30 pre-GX state
-where a GX/F commit has not superseded them.
+1. **Done:** batch P (above).
+2. Runner-free SC packages (`sinbad/ARCHITECTURE.md` §7, §3.3, §2.1): `scientia-operator-structure/2`
+   with per-block `block_symmetry`, per-pair `transpose_relation`, and a signed-graph
+   `sign_gauge`; defined `source x = expr;` classified `ModelDefined`; `input field`/`input
+   value` slots; `SourceLocator { module, span }`.
+3. SV1-A (E7): `DerivativeRequest` producer from `observable`/`objective` declarations with
+   `SymbolId`/`ExprId` links and design variables bound to case property slots; inverse-Poisson
+   corpus test and a public API Sinbad can call from a compiled case.
+4. SC-W1 (§2, §3): scoped by-reference imports (`GlobalDeclId`, `use` aliases/selective lists,
+   `pub`), `model` as the implicit one-instance system, `system`/`instance`/`bind`, the system
+   arena (`SysVarId`/`SysResId`, `OriginMap`), `scientia-system/1`, `scientia-operator-system/2`,
+   kernel-level `Composed` bind chains, ordered module closure; ARCHITECTURE §11 tests 1–5
+   (Scientia-local parts). `connector`/`port`/`Open` stay SC-W2.
 
-Next work is demand-pulled by E6/E7 (workspace `PLAN.md` §6):
-
-1. an additive `InfSup.blocks` optional pair field, only if a runtime
-   inf-sup checker (Methodus/Finitum) needs the pairing typed in-obligation
-   rather than re-derived from `OperatorStructure`;
-2. remaining form-derivation gaps (`FORM_BOUNDARY_PARTITION_REQUIRED`
-   partitions, opaque provider calls inside integrands) as executing cases
-   demand them;
-3. SV1-A: `DerivativeRequest` production from `.res` `observable`/`objective`
-   declarations for E7's inverse-Poisson derivative path.
-4. SC composition (design: `sinbad/ARCHITECTURE.md`; nothing landed). Runner-free
-   and E7-parallel first: `scientia-operator-structure/2` with per-block symmetry,
-   per-pair transpose relations and a signed-graph `sign_gauge` (today
-   `form_symmetry` is an unconditional `Unknown` for every multi-block system, so
-   this is new analysis; it replaces the case-data `equation_sign`); defined
-   `source` slots classified `ModelDefined` (today `source/joule` on 08 is
-   `Required ExternalValue`); `SourceLocator { module, span }`; and the
-   natural-boundary trace-shape refusal (`TENSOR_SHAPE: normal trace requires a
-   vector or rank-two tensor`) that stops 08/16/18/27/45 from factoring
-   (prerequisite batch P). Then SC-W1: scoped by-reference imports with
-   `GlobalDeclId` replacing GX-F4's flatten-by-name, `system`/`instance`/`bind`,
-   a `model` compiled as the implicit one-instance system,
-   `scientia-operator-system/2` keyed by system-level ids with an `OriginMap`,
-   and kernel-level bind composition (no expression rewriting). SC-W2:
-   `connector`/`port`, the `Open` boundary-term disposition introducing port
-   unknowns in the dual trace space, `oriented by`, per-stratum matching and
-   coverage refusals. Contract changes are recorded as GX-CONTRACTS C12 first.
-
-Scientia remains execution-free; evolve serialized schemas only with explicit
-versioning and receipt-chain validation.
+Deviations from `sinbad/ARCHITECTURE.md` are recorded in the batch/package sections above with
+their reasons; the coordinator folds them into GX-CONTRACTS C12. Scientia remains execution-free.

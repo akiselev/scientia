@@ -110,6 +110,12 @@ pub enum FormTransformation {
     EliminateEssentialBoundaryTerm {
         declaration: DeclarationId,
     },
+    /// Batch P: the boundary term on `region` was substituted by the natural zero flux datum
+    /// because no boundary condition targets the test field there; see
+    /// [`BoundaryTermDisposition::NaturallyClosed`].
+    SubstituteNaturalClosure {
+        region: RegionId,
+    },
 }
 
 /// Complex-valued forms never gain an implicit conjugation during FC2 derivation. Authored or
@@ -143,8 +149,15 @@ pub enum FormAssumption {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum BoundaryTermDisposition {
-    Retained {
-        integral_index: usize,
+    /// Batch P (`sinbad/ARCHITECTURE.md` §4.4 `ImplicitNatural`): the region carries no
+    /// boundary condition for the test field, so the flux datum is the natural zero and the
+    /// boundary term is substituted by zero -- no integral is emitted. Keeping a state-computed
+    /// facet integral here would cancel the integration by parts and enforce nothing; a case
+    /// that wants a nonzero flux must bind a declared `neumann` value. `flux` is the signed
+    /// strong normal-flux expression (the boundary datum's model-side counterpart), retained so
+    /// a later `boundary_flux_strong` observable or SC-W2 port can name it.
+    NaturallyClosed {
+        flux: ExprId,
     },
     Substituted {
         declaration: DeclarationId,
@@ -559,6 +572,13 @@ pub fn derive_variational_form_for(
     let mut boundary_terms = vec![];
     let mut substituted_neumann_fluxes = BTreeSet::new();
     let mut boundary_captures: Vec<FormCapture> = vec![];
+    // Batch P: every provider call inside a residual term becomes a compiler-synthesized
+    // property capture (see `lift_provider_calls`), so `rho * convect(u, u)` or a bare
+    // `reaction(c, phi)` source binds through the same `ModelDefinedProperty` path as a named
+    // `property`, instead of reaching FC4 as an un-bindable raw call.
+    for (term, _) in &mut terms {
+        *term = lift_provider_calls(&mut arena, *term, &mut boundary_captures)?;
+    }
     let spatial_dimension = model.domains[domain.index()].spatial_dimension;
     for (term, sign) in terms {
         match arena.expressions[term.index()].kind.clone() {
@@ -1114,9 +1134,9 @@ fn derive_boundary_terms(
         .collect();
     // GX-A6 natural-boundary convention: when the model declares no exterior region for this
     // domain, synthesize the implicit whole-boundary region `boundary("<Domain>.boundary")`
-    // rather than refusing. Its retained boundary term is a natural (Neumann-zero unless
-    // bound) flux term, exactly like any other region with no matching boundary condition
-    // below; `implicit_natural_boundary` still records that a case must discharge it.
+    // rather than refusing. Its boundary term is naturally closed (zero flux datum), exactly
+    // like any other region with no matching boundary condition below;
+    // `implicit_natural_boundary` still records that a case must discharge the partition.
     let implicit_natural_boundary = regions.is_empty();
     if implicit_natural_boundary {
         regions.push(SemanticRegion {
@@ -1141,19 +1161,22 @@ fn derive_boundary_terms(
     };
     for region in regions {
         let test_trace = arena.trace(test, TraceSide::Exterior, region.span);
-        let formal = match operator {
+        // `flux` is the bare (test-free) boundary datum the integration by parts produced:
+        // `q·n` for a divergence, the operand's trace for a gradient (the normal lands on the
+        // vector test function) or a curl (the tangential trace pairs with the test).
+        let (flux, formal) = match operator {
             DifferentialOperator::Divergence => {
                 let normal = arena.normal_component(operand, TraceSide::Exterior, region.span)?;
-                arena.pair(normal, test_trace, region.span)?
+                (normal, arena.pair(normal, test_trace, region.span)?)
             }
             DifferentialOperator::Gradient => {
                 let value = arena.trace(operand, TraceSide::Exterior, region.span);
                 let normal_test = arena.normal_component(test, TraceSide::Exterior, region.span)?;
-                arena.multiply(value, normal_test, region.span)?
+                (value, arena.multiply(value, normal_test, region.span)?)
             }
             DifferentialOperator::Curl => {
                 let flux_trace = arena.trace(operand, TraceSide::Exterior, region.span);
-                arena.pair(flux_trace, test_trace, region.span)?
+                (flux_trace, arena.pair(flux_trace, test_trace, region.span)?)
             }
             _ => unreachable!("only grad/div/curl boundary terms are derived"),
         };
@@ -1217,8 +1240,7 @@ fn derive_boundary_terms(
                     }
                     _ => unreachable!("only grad/div/curl boundary terms are derived"),
                 };
-                let value =
-                    bind_boundary_value(arena, *value, declaration, region.span, boundary_captures);
+                let value = lift_provider_calls(arena, *value, boundary_captures)?;
                 let substituted = arena.pair(value, boundary_test, region.span)?;
                 let substituted = arena.with_sign(substituted, sign, region.span);
                 let integral_index = integrals.len();
@@ -1257,18 +1279,16 @@ fn derive_boundary_terms(
                 });
             }
             _ => {
-                let integral_index = integrals.len();
-                integrals.push(VariationalIntegral {
-                    measure: SemanticMeasure::ExteriorFacet { region: region.id },
-                    side: FormSide::Exterior,
-                    integrand: formal,
-                    source_span: region.span,
-                });
+                // Natural closure: the flux datum is zero, so the substituted integral
+                // vanishes and nothing is emitted (see `BoundaryTermDisposition::NaturallyClosed`).
+                let flux = arena.with_sign(flux, sign, region.span);
+                transformations
+                    .push(FormTransformation::SubstituteNaturalClosure { region: region.id });
                 boundary_terms.push(BoundaryTermReceipt {
                     region: region.id,
                     source,
                     integrand: formal,
-                    disposition: BoundaryTermDisposition::Retained { integral_index },
+                    disposition: BoundaryTermDisposition::NaturallyClosed { flux },
                 });
             }
         }
@@ -1276,42 +1296,113 @@ fn derive_boundary_terms(
     Ok(())
 }
 
-/// GX-facet (bounded scope): a Neumann boundary value that is a bare provider call (e.g.
-/// `neumann u = flux(t);`) has no symbol of its own to bind a tensor input to, unlike a
-/// `property`/`source`-backed value that authors reference by name. Synthesize a compiler symbol
-/// for it, keyed on the boundary condition's own declaration id (so distinct boundary conditions
-/// never collide -- see `SymbolId::generated_for`), and record a `FormCapture` whose `definition`
-/// is the original call. FC4's tensor factoring then binds it exactly like a cell-measure
-/// `ModelDefinedProperty` input: an External input, never inlined. Anything other than a bare
-/// top-level provider call -- a symbol reference, or a compound expression that merely contains
-/// one -- is passed through unchanged and resolves (or refuses) exactly as before this change.
-fn bind_boundary_value(
+/// Batch P (generalizing GX-facet's bare-boundary-value rule): lift every `ProviderCall` inside
+/// `id` into a compiler-synthesized property symbol whose `FormCapture.definition` is the
+/// original call node, exactly what `property k = thermal_conductivity(T);` records for a named
+/// property. FC3 then classifies the symbol as a `ModelDefinedProperty` input and FC4 binds it
+/// as an External input with GX-A3's chain-rule tangent when the provider is differentiable and
+/// scalar; a vector-valued call (`convect(u, u)`) stays a frozen coefficient, named truthfully
+/// in the derivative receipt. Ancestors of a lifted call are rebuilt as new arena nodes; no
+/// pre-existing node is mutated, so every `definition` id still addresses the model arena.
+fn lift_provider_calls(
     arena: &mut FormArena,
-    value: ExprId,
-    declaration: DeclarationId,
-    span: SourceSpan,
-    boundary_captures: &mut Vec<FormCapture>,
-) -> ExprId {
-    if !matches!(
-        arena.expressions[value.index()].kind,
-        SemanticExprKind::ProviderCall { .. }
-    ) {
-        return value;
+    id: ExprId,
+    captures: &mut Vec<FormCapture>,
+) -> Result<ExprId, FormCompileError> {
+    let expression = arena
+        .expressions
+        .get(id.index())
+        .ok_or(FormCompileError::InvalidExpression(id))?
+        .clone();
+    if let SemanticExprKind::ProviderCall { .. } = expression.kind {
+        let symbol = SymbolId::generated_for_expression(id);
+        let mut ty = expression.ty.clone();
+        ty.role = SemanticRole::Property;
+        if !captures.iter().any(|capture| capture.symbol == symbol) {
+            captures.push(FormCapture {
+                symbol,
+                role: FormCaptureRole::Property,
+                ty: ty.clone(),
+                domain: None,
+                space: None,
+                source_span: expression.span,
+                definition: Some(id),
+            });
+        }
+        return Ok(arena.push(SemanticExprKind::Symbol { symbol }, ty, expression.span));
     }
-    let mut ty = arena.expressions[value.index()].ty.clone();
-    ty.role = SemanticRole::Property;
-    let symbol = SymbolId::generated_for(declaration);
-    let symbol_expr = arena.push(SemanticExprKind::Symbol { symbol }, ty.clone(), span);
-    boundary_captures.push(FormCapture {
-        symbol,
-        role: FormCaptureRole::Property,
-        ty,
-        domain: None,
-        space: None,
-        source_span: span,
-        definition: Some(value),
-    });
-    symbol_expr
+    let children = expression_children(&expression.kind);
+    let mut lifted = Vec::with_capacity(children.len());
+    for child in &children {
+        lifted.push(lift_provider_calls(arena, *child, captures)?);
+    }
+    if lifted == children {
+        return Ok(id);
+    }
+    let kind = replace_children(&expression.kind, &lifted);
+    Ok(arena.push(kind, expression.ty, expression.span))
+}
+
+/// Rebuild `kind` with its children (in [`expression_children`] order) replaced by `children`.
+fn replace_children(kind: &SemanticExprKind, children: &[ExprId]) -> SemanticExprKind {
+    match kind {
+        SemanticExprKind::Unary { op, .. } => SemanticExprKind::Unary {
+            op: *op,
+            arg: children[0],
+        },
+        SemanticExprKind::Differential { operator, .. } => SemanticExprKind::Differential {
+            operator: *operator,
+            arg: children[0],
+        },
+        SemanticExprKind::TensorTrace { axes, .. } => SemanticExprKind::TensorTrace {
+            value: children[0],
+            axes: *axes,
+        },
+        SemanticExprKind::FacetTrace { side, .. } => SemanticExprKind::FacetTrace {
+            value: children[0],
+            side: *side,
+        },
+        SemanticExprKind::Jump { .. } => SemanticExprKind::Jump { value: children[0] },
+        SemanticExprKind::Average { .. } => SemanticExprKind::Average { value: children[0] },
+        SemanticExprKind::Conjugate { .. } => SemanticExprKind::Conjugate { value: children[0] },
+        SemanticExprKind::NormalComponent { side, .. } => SemanticExprKind::NormalComponent {
+            value: children[0],
+            side: *side,
+        },
+        SemanticExprKind::Binary { op, .. } => SemanticExprKind::Binary {
+            op: *op,
+            lhs: children[0],
+            rhs: children[1],
+        },
+        SemanticExprKind::Contraction {
+            axes,
+            conjugate_lhs,
+            ..
+        } => SemanticExprKind::Contraction {
+            lhs: children[0],
+            rhs: children[1],
+            axes: axes.clone(),
+            conjugate_lhs: *conjugate_lhs,
+        },
+        SemanticExprKind::Call { function, .. } => SemanticExprKind::Call {
+            function: function.clone(),
+            args: children.to_vec(),
+        },
+        SemanticExprKind::ProviderCall { provider, .. } => SemanticExprKind::ProviderCall {
+            provider: *provider,
+            args: children.to_vec(),
+        },
+        SemanticExprKind::Vector { .. } => SemanticExprKind::Vector {
+            elements: children.to_vec(),
+        },
+        SemanticExprKind::Index { .. } => SemanticExprKind::Index {
+            value: children[0],
+            indices: children[1..].to_vec(),
+        },
+        SemanticExprKind::Number { .. }
+        | SemanticExprKind::String { .. }
+        | SemanticExprKind::Symbol { .. } => kind.clone(),
+    }
 }
 
 struct FormArena {

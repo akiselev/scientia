@@ -52,19 +52,38 @@ fn integration_by_parts_synthesizes_the_implicit_whole_boundary_region() {
         "the region was synthesized, so implicit_natural_boundary must be true"
     );
 
-    // The retained boundary term is a natural (Neumann-zero unless bound) flux term: no
-    // boundary condition applies to a region the model never declared, so it is `Retained`,
-    // not eliminated or substituted.
+    // Batch P: no boundary condition applies to a region the model never declared, so the
+    // boundary term is naturally closed -- substituted by the zero flux datum, with no
+    // exterior-facet integral emitted (a state-computed one would cancel the integration by
+    // parts) and the strong flux expression recorded for later observables/ports.
     let boundary_term = form
         .receipt
         .boundary_terms
         .iter()
         .find(|term| term.region == synthetic_region)
-        .expect("a boundary term is retained on the synthetic region");
+        .expect("a boundary term is recorded on the synthetic region");
+    let scientia::BoundaryTermDisposition::NaturallyClosed { flux } = boundary_term.disposition
+    else {
+        panic!(
+            "expected NaturallyClosed, got {:?}",
+            boundary_term.disposition
+        );
+    };
     assert!(matches!(
-        boundary_term.disposition,
-        scientia::BoundaryTermDisposition::Retained { .. }
+        form.expressions[flux.index()].kind,
+        scientia::SemanticExprKind::Unary { .. }
+            | scientia::SemanticExprKind::NormalComponent { .. }
     ));
+    assert!(
+        form.integrals
+            .iter()
+            .all(|integral| matches!(integral.measure, scientia::SemanticMeasure::Cell { .. })),
+        "a naturally closed boundary emits no facet integral"
+    );
+    assert!(form.receipt.transformations.iter().any(|transformation| matches!(
+        transformation,
+        scientia::FormTransformation::SubstituteNaturalClosure { region } if *region == synthetic_region
+    )));
 
     // FC3 still discharges a `BoundaryPartitionRequirement` for the synthetic region, so a
     // downstream realization (Finitum) must still supply boundary data for it.

@@ -335,6 +335,69 @@ pub enum RequirementInferenceError {
         condition: DeclarationId,
         region: RegionId,
     },
+    /// Batch P: a normal trace of an inline product/quotient/power of two non-scalar operands
+    /// (`normal_component(a * b)` with `a`, `b` both vectors) cannot be expressed by mapping
+    /// its leaves, because `n·(a∘b) != (n·a)(n·b)`. Wrap the expression in a `constitutive`
+    /// symbol so it is evaluated at the facet and contracted with the normal as one value.
+    #[error(
+        "REQ_NORMAL_TRACE_NONLINEAR: normal trace of expression {expression} multiplies two \
+         non-scalar operands; name the flux in a `constitutive` declaration instead"
+    )]
+    NormalTraceNonlinear { expression: ExprId },
+    /// Batch P: a normal trace of an inline computed tensor (contraction, function or provider
+    /// call, indexing, vector literal) would need the facet normal applied to the computed
+    /// result, which leaf trace mappings cannot express. Name it in a `constitutive` symbol.
+    #[error(
+        "REQ_NORMAL_TRACE_UNSUPPORTED: normal trace of computed tensor expression {expression} \
+         is not expressible by leaf trace mappings; name the flux in a `constitutive` declaration"
+    )]
+    NormalTraceUnsupported { expression: ExprId },
+}
+
+/// Batch P: whether a semantic node's *value* carries the free axis a normal trace contracts.
+/// Scalars (and non-numeric nodes) do not; a normal mapping reaching them is dropped so the
+/// trace is a plain value trace (`n·(s v) = s (n·v)`).
+pub(crate) fn carries_normal_trace(expression: &SemanticExpr) -> bool {
+    match &expression.ty.shape {
+        SemanticShape::Numeric(ValueShape::Scalar)
+        | SemanticShape::Boolean
+        | SemanticShape::String
+        | SemanticShape::Region => false,
+        SemanticShape::Numeric(_) | SemanticShape::Deferred => true,
+    }
+}
+
+/// Batch P: the trace mapping a child of `expression` receives when the parent is evaluated
+/// under `mapping`. Only `Normal` is redistributed: it stays on a non-scalar child and is
+/// dropped (natural value trace) on a scalar one. `derivative` is the evaluation the child is
+/// requested at; a differential of a scalar field still carries the axis (`grad(V)`), so the
+/// node-shape test is skipped for non-value evaluations.
+pub(crate) fn normal_trace_child_mapping(
+    child: &SemanticExpr,
+    derivative: DerivativeEvaluation,
+    mapping: Option<TraceMapping>,
+) -> Option<TraceMapping> {
+    match mapping {
+        Some(TraceMapping::Normal)
+            if matches!(
+                derivative,
+                DerivativeEvaluation::Value | DerivativeEvaluation::TimeDerivative
+            ) && !carries_normal_trace(child) =>
+        {
+            None
+        }
+        other => other,
+    }
+}
+
+/// Batch P: children whose value is *consumed* to compute a fresh result (contraction operands,
+/// call arguments, indexed values) never inherit a normal mapping; the normal would apply to
+/// the result, not to them.
+fn drop_normal_trace(mapping: Option<TraceMapping>) -> Option<TraceMapping> {
+    match mapping {
+        Some(TraceMapping::Normal) => None,
+        other => other,
+    }
 }
 
 /// Infer the complete FC3 requirements for a typed form.
@@ -898,7 +961,12 @@ fn collect_evaluations_inner(
     expanding: &mut BTreeSet<SymbolId>,
     inputs: &mut BTreeMap<SymbolId, BTreeSet<BasisEvaluationRequirement>>,
 ) -> Result<(), RequirementInferenceError> {
-    let kind = &expression(expressions, id)?.kind;
+    let node = expression(expressions, id)?;
+    // Batch P: a `Normal` mapping only means something on a value that has the axis to
+    // contract; on a scalar node it degenerates to the plain trace.
+    let trace_mapping_override =
+        normal_trace_child_mapping(node, derivative, trace_mapping_override);
+    let kind = &node.kind;
     match kind {
         SemanticExprKind::Symbol { symbol } => {
             inputs
@@ -917,12 +985,17 @@ fn collect_evaluations_inner(
                     | BindingDefinition::Property(definition)
                     | BindingDefinition::ConstitutiveLaw(definition) => definition,
                 };
+                // Batch P: a model-defined symbol is an opaque preprocessing input. Under a
+                // normal mapping its definition is evaluated at the facet as one value and the
+                // result is contracted with the normal, so the definition's own leaves need
+                // plain traces (`k(T) grad(T)` needs `T` and `grad(T)` at the facet, never a
+                // "normal trace of T").
                 collect_evaluations_inner(
                     expressions,
                     definition,
                     derivative,
                     site,
-                    trace_mapping_override,
+                    drop_normal_trace(trace_mapping_override),
                     bindings,
                     expanding,
                     inputs,
@@ -930,18 +1003,33 @@ fn collect_evaluations_inner(
                 expanding.remove(symbol);
             }
         }
-        SemanticExprKind::Unary { arg, .. }
-        | SemanticExprKind::TensorTrace { value: arg, .. }
-        | SemanticExprKind::Conjugate { value: arg } => collect_evaluations_inner(
-            expressions,
-            *arg,
-            derivative,
-            site,
-            trace_mapping_override,
-            bindings,
-            expanding,
-            inputs,
-        )?,
+        SemanticExprKind::Unary { arg, .. } | SemanticExprKind::Conjugate { value: arg } => {
+            collect_evaluations_inner(
+                expressions,
+                *arg,
+                derivative,
+                site,
+                trace_mapping_override,
+                bindings,
+                expanding,
+                inputs,
+            )?
+        }
+        SemanticExprKind::TensorTrace { value: arg, .. } => {
+            if trace_mapping_override == Some(TraceMapping::Normal) {
+                return Err(RequirementInferenceError::NormalTraceUnsupported { expression: id });
+            }
+            collect_evaluations_inner(
+                expressions,
+                *arg,
+                derivative,
+                site,
+                trace_mapping_override,
+                bindings,
+                expanding,
+                inputs,
+            )?
+        }
         SemanticExprKind::Differential { operator, arg } => collect_evaluations_inner(
             expressions,
             *arg,
@@ -994,8 +1082,51 @@ fn collect_evaluations_inner(
             expanding,
             inputs,
         )?,
-        SemanticExprKind::Binary { lhs, rhs, .. }
-        | SemanticExprKind::Contraction { lhs, rhs, .. } => {
+        SemanticExprKind::Binary { op, lhs, rhs } => {
+            // Batch P: the normal mapping follows the operand that carries the axis; a
+            // scalar factor is a plain trace. Two axis-carrying operands under a product are
+            // not linear in either and are refused.
+            let lhs_mapping = normal_trace_child_mapping(
+                expression(expressions, *lhs)?,
+                derivative,
+                trace_mapping_override,
+            );
+            let rhs_mapping = normal_trace_child_mapping(
+                expression(expressions, *rhs)?,
+                derivative,
+                trace_mapping_override,
+            );
+            if matches!(op, BinaryOp::Mul | BinaryOp::Div | BinaryOp::Pow)
+                && lhs_mapping == Some(TraceMapping::Normal)
+                && rhs_mapping == Some(TraceMapping::Normal)
+            {
+                return Err(RequirementInferenceError::NormalTraceNonlinear { expression: id });
+            }
+            collect_evaluations_inner(
+                expressions,
+                *lhs,
+                derivative,
+                site,
+                lhs_mapping,
+                bindings,
+                expanding,
+                inputs,
+            )?;
+            collect_evaluations_inner(
+                expressions,
+                *rhs,
+                derivative,
+                site,
+                rhs_mapping,
+                bindings,
+                expanding,
+                inputs,
+            )?;
+        }
+        SemanticExprKind::Contraction { lhs, rhs, .. } => {
+            if trace_mapping_override == Some(TraceMapping::Normal) {
+                return Err(RequirementInferenceError::NormalTraceUnsupported { expression: id });
+            }
             collect_evaluations_inner(
                 expressions,
                 *lhs,
@@ -1020,6 +1151,9 @@ fn collect_evaluations_inner(
         SemanticExprKind::Call { args, .. }
         | SemanticExprKind::ProviderCall { args, .. }
         | SemanticExprKind::Vector { elements: args } => {
+            if trace_mapping_override == Some(TraceMapping::Normal) {
+                return Err(RequirementInferenceError::NormalTraceUnsupported { expression: id });
+            }
             for arg in args {
                 collect_evaluations_inner(
                     expressions,
@@ -1034,6 +1168,9 @@ fn collect_evaluations_inner(
             }
         }
         SemanticExprKind::Index { value, indices } => {
+            if trace_mapping_override == Some(TraceMapping::Normal) {
+                return Err(RequirementInferenceError::NormalTraceUnsupported { expression: id });
+            }
             collect_evaluations_inner(
                 expressions,
                 *value,

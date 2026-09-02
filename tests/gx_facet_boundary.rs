@@ -36,9 +36,9 @@ model NeumannProviderPoisson {
 "#;
 
 /// Same shape as `NEUMANN_PROVIDER_POISSON`, except the boundary value is a compound expression
-/// that merely *contains* a provider call (`2 * prescribed_flux(t)`) rather than being a bare
-/// top-level call. This is deliberately out of the bounded scope this change covers, and must
-/// still refuse with the pre-existing `TENSOR_UNSUPPORTED` code, exactly as before this change.
+/// that merely *contains* a provider call (`2 * prescribed_flux(t)`). Batch P generalized the
+/// GX-facet bare-call rule into `lift_provider_calls`, so the nested call is synthesized into a
+/// property capture exactly like the bare one and the facet integral factors and evaluates.
 const NEUMANN_COMPOUND_PROVIDER_POISSON: &str = r#"
 module gx_facet.compound_provider_neumann;
 model NeumannCompoundProviderPoisson {
@@ -113,12 +113,11 @@ fn facet_provider_call_becomes_an_external_input_and_evaluates_correctly() {
     }
 }
 
-/// Bounded-scope refusal: a provider call that is not the boundary value's own top-level
-/// expression (here, nested inside a `2 * ...` multiplication) is not synthesized into a
-/// capture, so it still reaches `factor_operator`'s tensor lowering as a raw, un-bound
-/// `ProviderCall` node and refuses with the pre-existing typed error, unchanged by this package.
+/// Batch P: a provider call nested inside a compound boundary value lifts into a capture too;
+/// the facet QFunction binds it as the one External `ModelDefinedProperty` input and evaluates
+/// `-(2 * flux)`.
 #[test]
-fn a_provider_call_nested_inside_a_compound_boundary_expression_still_refuses() {
+fn a_provider_call_nested_inside_a_compound_boundary_expression_lifts_too() {
     let compilation = compile_semantics(
         NEUMANN_COMPOUND_PROVIDER_POISSON,
         &UnitRegistry::si_bootstrap(),
@@ -131,12 +130,25 @@ fn a_provider_call_nested_inside_a_compound_boundary_expression_still_refuses() 
     )
     .unwrap();
     let requirements = infer_form_requirements(&compilation.semantic, &form).unwrap();
-    let error = factor_operator(&form, &requirements).unwrap_err();
-    let message = error.to_string();
-    assert!(
-        message.contains("TENSOR_UNSUPPORTED") && message.contains("later tensor primitive"),
-        "expected the pre-existing bounded-scope refusal, got: {message}"
-    );
+    let factorization = factor_operator(&form, &requirements).unwrap();
+    let facet_integral = factorization
+        .integrals
+        .iter()
+        .find(|integral| matches!(integral.measure, SemanticMeasure::ExteriorFacet { .. }))
+        .expect("the Neumann boundary term derives an exterior-facet integral");
+    let inputs = &facet_integral.primal.inputs;
+    assert_eq!(inputs.len(), 1, "one lifted provider input: {inputs:?}");
+    assert_eq!(inputs[0].role, TensorInputRole::External);
+    assert!(matches!(
+        inputs[0].source,
+        InputSourceRequirement::ModelDefinedProperty { .. }
+    ));
+    for flux_value in [0.0, 1.0, -2.5] {
+        let outputs =
+            interpret_qfunction(&facet_integral.primal, &[DenseTensor::scalar(flux_value)])
+                .unwrap();
+        assert_eq!(outputs[0].data[0], -2.0 * flux_value);
+    }
 }
 
 /// Deliberately reaches into the sinbad checkout, matching the pattern (and stated rationale) in
@@ -156,6 +168,7 @@ fn corpus_sweep_reports_operator_factorization_counts() {
     let mut forms = 0usize;
     let mut requirements_ok = 0usize;
     let mut factored = 0usize;
+    let mut naturally_closed = 0usize;
     let mut factored_names = Vec::new();
 
     let mut files = std::fs::read_dir(&dir)
@@ -182,19 +195,48 @@ fn corpus_sweep_reports_operator_factorization_counts() {
                     continue;
                 }
                 total_equations += 1;
-                let Ok(form) =
-                    derive_variational_form(&compilation.semantic, &model.name, &declaration.name)
-                else {
-                    continue;
+                let name = format!("{}:{}", model.name, declaration.name);
+                let form = match derive_variational_form(
+                    &compilation.semantic,
+                    &model.name,
+                    &declaration.name,
+                ) {
+                    Ok(form) => form,
+                    Err(error) => {
+                        eprintln!("  form      {name}: {error}");
+                        continue;
+                    }
                 };
                 forms += 1;
-                let Ok(requirements) = infer_form_requirements(&compilation.semantic, &form) else {
-                    continue;
+                let closed = form
+                    .receipt
+                    .boundary_terms
+                    .iter()
+                    .filter(|term| {
+                        matches!(
+                            term.disposition,
+                            scientia::BoundaryTermDisposition::NaturallyClosed { .. }
+                        )
+                    })
+                    .count();
+                if closed > 0 {
+                    naturally_closed += 1;
+                    eprintln!("  closed    {name}: {closed} naturally closed boundary term(s)");
+                }
+                let requirements = match infer_form_requirements(&compilation.semantic, &form) {
+                    Ok(requirements) => requirements,
+                    Err(error) => {
+                        eprintln!("  require   {name}: {error}");
+                        continue;
+                    }
                 };
                 requirements_ok += 1;
-                if factor_operator(&form, &requirements).is_ok() {
-                    factored += 1;
-                    factored_names.push(format!("{}:{}", model.name, declaration.name));
+                match factor_operator(&form, &requirements) {
+                    Ok(_) => {
+                        factored += 1;
+                        factored_names.push(name);
+                    }
+                    Err(error) => eprintln!("  factor    {name}: {error}"),
                 }
             }
         }
@@ -202,7 +244,8 @@ fn corpus_sweep_reports_operator_factorization_counts() {
 
     eprintln!(
         "GX-facet corpus sweep: {factored}/{total_equations} operator factorizations \
-         ({forms} forms, {requirements_ok} requirements) -- baseline was 41/128"
+         ({forms} forms, {requirements_ok} requirements, {naturally_closed} equations with a \
+         naturally closed boundary) -- baseline was 41/128"
     );
     assert_eq!(
         total_equations, 128,
@@ -219,6 +262,27 @@ fn corpus_sweep_reports_operator_factorization_counts() {
             .any(|name| name == "FickDiffusion:species_balance"),
         "the corpus model this package targets must now factor: {factored_names:?}"
     );
+    // Batch P (`sinbad/ARCHITECTURE.md` §12 "P" item 1): the natural-boundary trace-shape
+    // refusal (`TENSOR_SHAPE` on constitutive fluxes) no longer stops 08, 16, 18, 27 and 45
+    // from factoring. 27's `momentum` and 45's `fluid_momentum`/`fluid_continuity` are outside
+    // this package (a provider call inside the integrand; a pressure row with no test space).
+    for required in [
+        "ElectrothermalJoule:electrical",
+        "ElectrothermalJoule:thermal",
+        "PoissonNernstPlanck:cation_balance",
+        "PoissonNernstPlanck:anion_balance",
+        "PoissonNernstPlanck:poisson",
+        "Thermoelasticity:thermal",
+        "Thermoelasticity:mechanics",
+        "BoussinesqConvection:energy",
+        "ConjugateHeatTransfer:fluid_energy",
+        "ConjugateHeatTransfer:solid_energy",
+    ] {
+        assert!(
+            factored_names.iter().any(|name| name == required),
+            "batch P requires {required} to factor; factored: {factored_names:?}"
+        );
+    }
 }
 
 /// The Sinbad corpus directory, only when the workspace coordinator opted in through

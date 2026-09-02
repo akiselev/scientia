@@ -77,10 +77,13 @@ Unsupported primitives return stable capability diagnostics instead of becoming 
 named-physics opcodes.
 
 Derived forms record that declared exterior regions are assumed to partition the domain boundary;
-Finitum must validate that assumption against mesh topology. A Neumann value is substituted at
-most once per region and field because FC2 has no per-flux boundary correspondence. Complex
-conjugation is always explicit—derivation never silently changes a bilinear contraction into a
-sesquilinear one.
+Finitum must validate that assumption against mesh topology. A region with no boundary condition
+for the equation's test field is naturally closed: the zero flux datum is substituted, no facet
+integral is emitted, and the receipt keeps the strong flux expression. A Neumann value is
+substituted at most once per region and field because FC2 has no per-flux boundary
+correspondence. Provider calls inside a derived residual or boundary value are lifted into
+compiler-synthesized property captures and bind like a named `property`. Complex conjugation is
+always explicit—derivation never silently changes a bilinear contraction into a sesquilinear one.
 
 ## Command line
 
