@@ -228,6 +228,21 @@ fn finish_system(
     })
 }
 
+/// The by-reference identity of one per-model block (SC-W1 §2.6): the same payload the
+/// system digest folds, so a `scientia-operator-system/2` row can name the block without
+/// embedding or re-numbering it.
+pub fn block_digest(block: &OperatorSystemBlock) -> Digest {
+    span_independent_digest(&OperatorSystemBlockDigest {
+        equation: &block.equation,
+        row: block.row,
+        columns: &block.columns,
+        form: &block.form.artifact_digest,
+        requirements: &block.requirements.artifact_digest,
+        factorization: &block.factorization.artifact_digest,
+        kernels: &block.kernels.artifact_digest,
+    })
+}
+
 #[derive(Serialize)]
 struct OperatorSystemBlockDigest<'a> {
     equation: &'a str,

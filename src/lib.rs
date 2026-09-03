@@ -7,6 +7,7 @@
 #![forbid(unsafe_code)]
 
 pub mod binding_slots;
+pub mod composition;
 pub mod derivative;
 pub mod evidence;
 pub mod form_interpreter;
@@ -26,6 +27,7 @@ pub mod structural;
 pub mod structure;
 pub mod structured;
 pub mod system;
+pub mod system_operator;
 pub mod tensor;
 pub mod tensor_interpreter;
 pub mod verification;
@@ -33,6 +35,13 @@ pub mod verification;
 pub use binding_slots::{
     BINDING_SLOTS_SCHEMA, BindingSlot, BindingSlotError, BindingSlotManifest, SlotInput, SlotKind,
     SlotStatus, derive_binding_slots, validate_binding_slot_manifest,
+};
+pub use composition::{
+    BoundChain, DependencyEdge, InstanceId, InstanceRecord, OrientationBasis, OriginMap, OutputId,
+    ResidualOrigin, SYSTEM_SCHEMA, SYSTEM_SLOTS_SCHEMA, ScientificSystem, SlotBinding, SysDomainId,
+    SysRegionId, SysRes, SysResId, SysVar, SysVarId, SysVarKind, SystemBind, SystemCompilation,
+    SystemDependency, SystemDomain, SystemError, SystemOutput, SystemRegion, SystemSlot,
+    SystemSlotManifest, VariableOrigin, compile_model_system, compile_system,
 };
 pub use derivative::{
     ActiveSet, Control, DERIVATIVE_REQUEST_SCHEMA, DerivativeConvention, DerivativeDependence,
@@ -53,7 +62,8 @@ pub use formulation::{
     BoundaryTermDisposition, BoundaryTermReceipt, FormArgument, FormArgumentRole, FormArity,
     FormAssumption, FormCapture, FormCaptureRole, FormCompileError, FormComplexConvention,
     FormReceipt, FormSide, FormTransformation, VariationalForm, VariationalIntegral,
-    compile_variational_form, derive_variational_form, derive_variational_form_for,
+    compile_variational_form, derive_output_form, derive_variational_form,
+    derive_variational_form_for,
 };
 pub use id::{Digest, ObligationId};
 pub use kernel::{
@@ -94,24 +104,28 @@ pub use requirements::{
     SpaceSystemRequirement, TraceMapping, TraceRequirement, infer_form_requirements,
 };
 pub use scientific::{
-    CouplingGraph, DerivativeContract, Expr, FilesystemModuleSource, InputDecl, InputDeclKind,
-    ModuleDigest, ModuleSource, NoImports, ObjectiveDecl, PropertyBranch, PropertyDefinition,
-    PropertyDomain, PropertyEvidence, PropertyInput, PropertyLocality, PropertyModel,
-    PropertyOutput, PropertyProviderRef, PropertySignature, PropertyTable, ProviderDecl,
-    ProviderDomainBound, ProviderInputDecl, ResolvedModules, ScientificError, ScientificModel,
-    ScientificModule, TableDerivativePolicy, TimeRole, TimeStateSemantics,
-    canonicalize_authored_quantity, derive_coupling_graph, format_expression,
+    BindDecl, ClosureModule, CouplingGraph, DeclKind, DerivativeContract, Expr,
+    FilesystemModuleSource, GlobalDeclId, ImportDecl, ImportItem, InputDecl, InputDeclKind,
+    InstanceArgument, InstanceDecl, MODULE_CLOSURE_SCHEMA, MemberPath, ModuleClosure, ModuleDigest,
+    ModuleProviderDecl, ModuleSource, NoImports, ObjectiveDecl, OutputDecl, PropertyBranch,
+    PropertyDefinition, PropertyDomain, PropertyEvidence, PropertyInput, PropertyLocality,
+    PropertyModel, PropertyOutput, PropertyProviderRef, PropertySignature, PropertyTable,
+    ProviderDecl, ProviderDomainBound, ProviderInputDecl, ResolvedModules, ScientificError,
+    ScientificModel, ScientificModule, SystemDecl, TableDerivativePolicy, TimeRole,
+    TimeStateSemantics, canonicalize_authored_quantity, derive_coupling_graph, format_expression,
     format_scientific_module, parse_expression, parse_scientific_module,
-    parse_scientific_module_diagnostics, resolve_modules, semantic_digest, validate_quantities,
+    parse_scientific_module_diagnostics, resolve_module_closure, resolve_modules, semantic_digest,
+    validate_quantities,
 };
 pub use semantic::{
     Axis, AxisContraction, DeclarationId, DifferentialOperator, DomainId, ExactLiteral, ExprId,
     Frame, ProviderId, RegionId, RegionKind, Registries, SemanticCompilation, SemanticDeclaration,
-    SemanticDeclarationKind, SemanticDomain, SemanticExpr, SemanticExprKind, SemanticIntegral,
-    SemanticMeasure, SemanticModel, SemanticModule, SemanticProvider, SemanticProviderInput,
-    SemanticProviderOutput, SemanticRegion, SemanticRole, SemanticShape, SemanticSymbol,
-    SemanticType, SymbolId, TraceSide, compile_semantics, compile_semantics_with, elaborate_module,
-    elaborate_module_with, semantic_arena_digest,
+    SemanticDeclarationKind, SemanticDomain, SemanticExpr, SemanticExprKind, SemanticImport,
+    SemanticIntegral, SemanticMeasure, SemanticModel, SemanticModule, SemanticProvider,
+    SemanticProviderInput, SemanticProviderOutput, SemanticRegion, SemanticRole, SemanticShape,
+    SemanticSymbol, SemanticType, SymbolId, TraceSide, compile_module_in_closure,
+    compile_semantics, compile_semantics_with, elaborate_module, elaborate_module_with,
+    semantic_arena_digest,
 };
 pub use source::{
     RelatedSpan, SourceDiagnostic, SourceLocator, SourceSeverity, SourceSpan, Spanned,
@@ -139,7 +153,12 @@ pub use structured::{
 };
 pub use system::{
     OPERATOR_SYSTEM_SCHEMA, OperatorBlockCoordinate, OperatorSystem, OperatorSystemBlock,
-    OperatorSystemError, compile_authored_operator_system, compile_operator_system,
+    OperatorSystemError, block_digest, compile_authored_operator_system, compile_operator_system,
+};
+pub use system_operator::{
+    BindComposition, BlockConstruction, ComposedPath, OutputKernelRecord, OutputKernels,
+    PropertyPath, SYSTEM_OPERATOR_SCHEMA, SysBlock, SysResBlock, SystemOperator,
+    SystemOperatorCompilation, SystemOperatorError, compile_system_operator,
 };
 pub use tensor::{
     BasisAdjoint, DerivativeConstructionMethod, DerivativeEvaluationPoint, DerivativeEvidence,

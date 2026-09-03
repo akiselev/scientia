@@ -2,7 +2,8 @@
 
 use crate::id::{Digest, span_independent_digest};
 use crate::scientific::{
-    BinaryOp, BoundaryConditionKind, FieldRole, SpaceFamily, SpaceSpec, UnaryOp, ValueShape,
+    BinaryOp, BoundaryConditionKind, Continuity, FieldRole, SpaceFamily, SpaceSpec, UnaryOp,
+    ValueShape,
 };
 use crate::semantic::{
     AxisContraction, DeclarationId, DifferentialOperator, DomainId, ExprId, Frame, RegionId,
@@ -504,6 +505,163 @@ pub fn derive_variational_form(
 }
 
 /// Derive a residual form with an explicit physical field supplying the test space.
+/// SC-W1 (`sinbad/ARCHITECTURE.md` §6): the output kernel of `output NAME: Kind on D = G;` is
+/// the point function `G` at a quadrature point together with its tangent with respect to the
+/// model's fields. It is obtained through the ordinary FC2--FC5 chain by deriving the synthetic
+/// scalar functional `∫_D G · w` against a generated `L2(order=0)` test argument `w`: the
+/// test-dual primal QFunction output is exactly `G` (the test basis is never in the point
+/// function), and the JVP is `dG/dx · δx`. Nothing about `G` is rewritten; provider calls are
+/// lifted into captures exactly as in a residual.
+pub fn derive_output_form(
+    module: &SemanticModule,
+    model_name: &str,
+    output_name: &str,
+) -> Result<VariationalForm, FormCompileError> {
+    let model = module
+        .models
+        .iter()
+        .find(|model| model.name == model_name)
+        .ok_or_else(|| FormCompileError::MissingModel(model_name.to_owned()))?;
+    let output = model
+        .declarations
+        .iter()
+        .find(|declaration| {
+            declaration.name == output_name
+                && matches!(declaration.kind, SemanticDeclarationKind::Output { .. })
+        })
+        .ok_or_else(|| FormCompileError::MissingForm {
+            model: model_name.to_owned(),
+            form: format!("output {output_name}"),
+        })?;
+    let SemanticDeclarationKind::Output { value, domain } = output.kind else {
+        unreachable!("output declaration was selected above")
+    };
+    let mut arena = FormArena::new(model.expressions.to_vec());
+    let argument_symbol = SymbolId::generated_for(output.id);
+    let mut argument_type = arena.expressions[value.index()].ty.clone();
+    argument_type.role = SemanticRole::PhysicalField(FieldRole::Test);
+    if matches!(argument_type.shape, SemanticShape::Deferred) {
+        argument_type.shape = SemanticShape::Numeric(ValueShape::Scalar);
+    }
+    let argument_expr = arena.push(
+        SemanticExprKind::Symbol {
+            symbol: argument_symbol,
+        },
+        argument_type.clone(),
+        output.span,
+    );
+    let mut lifted_captures: Vec<FormCapture> = vec![];
+    let term = lift_provider_calls(&mut arena, value, &mut lifted_captures)?;
+    arena.refine_deferred_shape(term, argument_type.shape.clone());
+    let cell = arena.pair(term, argument_expr, output.span)?;
+    let integrals = vec![VariationalIntegral {
+        measure: SemanticMeasure::Cell { domain },
+        side: FormSide::Cell,
+        integrand: cell,
+        source_span: output.span,
+    }];
+
+    let mut referenced = BTreeSet::new();
+    let mut visited = BTreeSet::new();
+    collect_symbol_ids(&arena.expressions, cell, &mut visited, &mut referenced)?;
+    let mut fields = BTreeSet::new();
+    collect_transitive_fields(
+        model,
+        value,
+        &mut BTreeSet::new(),
+        &mut BTreeSet::new(),
+        &mut fields,
+    )?;
+    referenced.extend(fields);
+    let mut captures = vec![];
+    for symbol_id in referenced {
+        if symbol_id == argument_symbol || symbol_id.is_generated() {
+            continue;
+        }
+        let symbol = model
+            .symbols
+            .get(symbol_id.index())
+            .ok_or(FormCompileError::InvalidSymbol(symbol_id))?;
+        let role = capture_role(&symbol.ty.role).ok_or_else(|| {
+            FormCompileError::InvalidReferenceRole {
+                form: output_name.to_owned(),
+                symbol: symbol.id,
+                role: symbol.ty.role.clone(),
+            }
+        })?;
+        captures.push(FormCapture {
+            symbol: symbol.id,
+            role,
+            ty: symbol.ty.clone(),
+            domain: symbol.domain,
+            space: symbol.space.clone(),
+            source_span: symbol.span,
+            definition: None,
+        });
+    }
+    captures.extend(lifted_captures);
+
+    let source_semantic_digest = Digest {
+        algorithm: "blake3".into(),
+        hex: semantic_arena_digest(module),
+    };
+    let arguments = vec![FormArgument {
+        symbol: argument_symbol,
+        role: FormArgumentRole::Test,
+        ty: argument_type,
+        domain,
+        space: SpaceSpec {
+            family: SpaceFamily::L2,
+            order: 0,
+            continuity: Continuity::Discontinuous,
+        },
+        source_span: output.span,
+    }];
+    let receipt = FormReceipt {
+        source_declaration: output.id,
+        test_space_source: None,
+        source_span: output.span,
+        complex_convention: FormComplexConvention::ExplicitConjugationOnly,
+        transformations: vec![FormTransformation::MultiplyByTest {
+            argument: argument_symbol,
+        }],
+        assumptions: vec![],
+        boundary_terms: vec![],
+    };
+    let name = format!("{output_name}::output");
+    let arity = FormArity { test: 1, trial: 0 };
+    validate_form_sides(&name, &arena.expressions, &integrals)?;
+    let artifact_digest = span_independent_digest(&FormDigestPayload {
+        schema: VARIATIONAL_FORM_SCHEMA,
+        model: &model.name,
+        name: &name,
+        source_semantic_digest: &source_semantic_digest,
+        declaration: output.id,
+        arity,
+        arguments: &arguments,
+        captures: &captures,
+        expressions: &arena.expressions,
+        integrals: &integrals,
+        providers: &model.providers,
+        receipt: &receipt,
+    });
+    Ok(VariationalForm {
+        schema: VARIATIONAL_FORM_SCHEMA.into(),
+        model: model.name.clone(),
+        name,
+        source_semantic_digest,
+        artifact_digest,
+        declaration: output.id,
+        arity,
+        arguments,
+        captures,
+        expressions: arena.expressions,
+        integrals,
+        providers: model.providers.clone(),
+        receipt,
+    })
+}
+
 pub fn derive_variational_form_for(
     module: &SemanticModule,
     model_name: &str,

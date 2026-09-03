@@ -4,7 +4,7 @@
 //! expressions remain structured, coupling is derived from use, and solver strategy never
 //! enters the model semantics.
 
-use crate::source::{SourceDiagnostic, SourceSpan, Spanned};
+use crate::source::{SourceDiagnostic, SourceSpan};
 use quantitas::{Dimension, Quantity, QuantityKindId, QuantityLiteral, UnitId, UnitRegistry};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -16,14 +16,124 @@ pub const SCIENTIFIC_SCHEMA: &str = "scientia-scientific/1";
 pub struct ScientificModule {
     pub schema: String,
     pub name: String,
-    pub imports: Vec<Spanned<String>>,
+    pub imports: Vec<ImportDecl>,
     pub models: Vec<ScientificModel>,
+    /// `pub? system NAME { ... }` declarations (SC-W1, `sinbad/ARCHITECTURE.md` §3.5). Skipped
+    /// from the digest projection when empty so every pre-SC module keeps its digest.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub systems: Vec<SystemDecl>,
+    /// Module-level `pub? provider` signatures (§3.2): the importable provider declarations.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub providers: Vec<ModuleProviderDecl>,
+    pub span: SourceSpan,
+}
+
+/// `use a.b.c;` (alias `c`), `use a.b.c as x;`, or `use a.b.c.{A, B as C};` (SC-W1 §3.2).
+/// Imports are by reference: nothing is copied into the importing module; names resolve to
+/// [`GlobalDeclId`]s of `pub` declarations of the target module.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ImportDecl {
+    pub module: String,
+    /// The qualified alias (`c` for `use a.b.c;`, `x` for `as x`); `None` for a selective list.
+    pub alias: Option<String>,
+    /// The selective list; `None` for a qualified-alias import.
+    pub items: Option<Vec<ImportItem>>,
+    pub span: SourceSpan,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ImportItem {
+    pub name: String,
+    pub alias: Option<String>,
+    pub span: SourceSpan,
+}
+
+/// A module-level provider signature with its visibility.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ModuleProviderDecl {
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub public: bool,
+    pub provider: ProviderDecl,
+}
+
+/// The kind half of a [`GlobalDeclId`] key.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DeclKind {
+    Model,
+    System,
+    Provider,
+}
+
+/// Identity of every importable declaration (`sinbad/ARCHITECTURE.md` §2.1): the declaring
+/// module's digest plus `(kind, name)`.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct GlobalDeclId {
+    pub module: ModuleDigest,
+    pub kind: DeclKind,
+    pub name: String,
+}
+
+impl std::fmt::Display for GlobalDeclId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:?} {} @ {}", self.kind, self.name, self.module)
+    }
+}
+
+/// `pub? system NAME { domain ...; instance ...; bind ...; }` (§3.5). Systems contain no
+/// free-form equations; every residual term belongs to an instance.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SystemDecl {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub public: bool,
+    pub domains: Vec<DomainDecl>,
+    pub instances: Vec<InstanceDecl>,
+    pub binds: Vec<BindDecl>,
+    pub span: SourceSpan,
+}
+
+/// `instance NAME: Model(param = value, ...);` -- `Model` is a local model name, an imported
+/// selective name, or an `alias.Model` path; every argument maps a model domain parameter to a
+/// system domain.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct InstanceDecl {
+    pub name: String,
+    pub model: String,
+    pub arguments: Vec<InstanceArgument>,
+    pub span: SourceSpan,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct InstanceArgument {
+    pub parameter: String,
+    pub value: String,
+    pub span: SourceSpan,
+}
+
+/// `bind a.x <- b.y;`: closes input slot `x` of instance `a` with output `y` of instance `b`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct BindDecl {
+    pub consumer: MemberPath,
+    pub producer: MemberPath,
+    pub span: SourceSpan,
+}
+
+/// `instance.member`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct MemberPath {
+    pub instance: String,
+    pub member: String,
     pub span: SourceSpan,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ScientificModel {
     pub name: String,
+    /// `pub model` (§3.2): importable from other modules. Skipped from the digest projection
+    /// when false.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub public: bool,
     pub domains: Vec<DomainDecl>,
     pub fields: Vec<FieldDecl>,
     pub parameters: Vec<ValueDecl>,
@@ -33,6 +143,9 @@ pub struct ScientificModel {
     /// from the digest projection when empty so every pre-SC module keeps its digest.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub inputs: Vec<InputDecl>,
+    /// `output name: Kind on Domain = expr;` declarations (§3.3): the model's bindable outputs.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub outputs: Vec<OutputDecl>,
     pub providers: Vec<ProviderDecl>,
     pub properties: Vec<PropertyBinding>,
     pub constitutive_laws: Vec<ConstitutiveBinding>,
@@ -160,6 +273,22 @@ pub struct InputDecl {
     /// Present exactly for `InputDeclKind::Field`.
     pub domain: Option<String>,
     pub domain_span: Option<SourceSpan>,
+    pub span: SourceSpan,
+}
+
+/// `output NAME: Kind on Domain = expr;` (§3.3): a declared expression over owned symbols that
+/// a system `bind` may feed into another instance's input. The ascription may be omitted only
+/// when the right-hand side is a bare owned field (`output potential = V;`).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct OutputDecl {
+    pub name: String,
+    pub quantity_kind: Option<QuantityKindId>,
+    pub quantity_kind_span: Option<SourceSpan>,
+    pub unit: Option<UnitId>,
+    pub unit_span: Option<SourceSpan>,
+    pub domain: Option<String>,
+    pub domain_span: Option<SourceSpan>,
+    pub value: Expr,
     pub span: SourceSpan,
 }
 
@@ -586,7 +715,7 @@ fn lex(input: &str) -> Result<Vec<Token>, Vec<ScientificError>> {
         } else {
             ""
         };
-        if matches!(two, "==" | "<=" | ">=" | "->") {
+        if matches!(two, "==" | "<=" | ">=" | "->" | "<-") {
             out.push(Token {
                 kind: TokenKind::Op(two.into()),
                 span: SourceSpan::new(i, i + 2),
@@ -746,19 +875,31 @@ impl Parser {
         };
         let mut imports = vec![];
         while self.eat_ident("use") {
-            if let Some((value, span)) = self.expect_ident_value() {
-                imports.push(Spanned { value, span });
+            if let Some(import) = self.import_decl() {
+                imports.push(import);
             }
-            self.expect_punct(';');
         }
         let mut models = vec![];
+        let mut systems = vec![];
+        let mut providers = vec![];
         while !matches!(self.token().kind, TokenKind::Eof) {
+            let public = self.eat_ident("pub");
             if self.eat_ident("model") {
-                if let Some(model) = self.model() {
+                if let Some(mut model) = self.model() {
+                    model.public = public;
                     models.push(model);
                 }
+            } else if self.eat_ident("system") {
+                if let Some(mut system) = self.system() {
+                    system.public = public;
+                    systems.push(system);
+                }
+            } else if self.eat_ident("provider") {
+                if let Some(provider) = self.provider() {
+                    providers.push(ModuleProviderDecl { public, provider });
+                }
             } else {
-                self.error("expected `model` declaration".into());
+                self.error("expected `model`, `system`, or `provider` declaration".into());
                 self.sync();
                 if matches!(self.token().kind, TokenKind::Punct('}')) {
                     self.bump();
@@ -770,8 +911,225 @@ impl Parser {
             name,
             imports,
             models,
+            systems,
+            providers,
             span: SourceSpan::new(start, self.token().span.end),
         }
+    }
+
+    /// After `use`: `a.b.c;` | `a.b.c as x;` | `a.b.c.{A, B as C};`. The lexer folds a dotted
+    /// path into one identifier (a trailing `.` before `{` included), so a selective list is
+    /// recognised by that trailing separator.
+    fn import_decl(&mut self) -> Option<ImportDecl> {
+        let (path, span) = self.expect_ident_value()?;
+        let import = if let Some(module) = path.strip_suffix('.') {
+            self.expect_punct('{');
+            let mut items = vec![];
+            while !self.eat_punct('}') {
+                if matches!(self.token().kind, TokenKind::Eof) {
+                    self.error("unterminated import list".into());
+                    return None;
+                }
+                let (name, item_span) = self.expect_ident_value()?;
+                let alias = if self.eat_ident("as") {
+                    Some(self.expect_ident_value()?.0)
+                } else {
+                    None
+                };
+                items.push(ImportItem {
+                    name,
+                    alias,
+                    span: item_span,
+                });
+                if !self.eat_punct(',') && !matches!(self.token().kind, TokenKind::Punct('}')) {
+                    self.error("expected `,` or `}` in import list".into());
+                    return None;
+                }
+            }
+            ImportDecl {
+                module: module.to_owned(),
+                alias: None,
+                items: Some(items),
+                span,
+            }
+        } else {
+            let alias = if self.eat_ident("as") {
+                self.expect_ident_value()?.0
+            } else {
+                path.rsplit('.').next().unwrap_or(&path).to_owned()
+            };
+            ImportDecl {
+                module: path,
+                alias: Some(alias),
+                items: None,
+                span,
+            }
+        };
+        self.expect_punct(';');
+        Some(import)
+    }
+
+    fn system(&mut self) -> Option<SystemDecl> {
+        let (name, span) = self.expect_ident_value()?;
+        self.expect_punct('{');
+        let mut system = SystemDecl {
+            name,
+            public: false,
+            domains: vec![],
+            instances: vec![],
+            binds: vec![],
+            span,
+        };
+        while !matches!(self.token().kind, TokenKind::Eof | TokenKind::Punct('}')) {
+            if self.eat_ident("domain") {
+                if let Some(domain) = self.domain() {
+                    system.domains.push(domain);
+                }
+            } else if self.eat_ident("instance") {
+                if let Some(instance) = self.instance_decl() {
+                    system.instances.push(instance);
+                }
+            } else if self.eat_ident("bind") {
+                if let Some(bind) = self.bind_decl() {
+                    system.binds.push(bind);
+                }
+            } else {
+                self.error(
+                    "unknown system declaration (expected `domain`, `instance`, or `bind`)".into(),
+                );
+                self.sync();
+            }
+        }
+        self.expect_punct('}');
+        self.eat_punct(';');
+        Some(system)
+    }
+
+    fn instance_decl(&mut self) -> Option<InstanceDecl> {
+        let (name, span) = self.expect_ident_value()?;
+        self.expect_punct(':');
+        let (model, _) = self.expect_ident_value()?;
+        let mut arguments = vec![];
+        if self.eat_punct('(') {
+            while !self.eat_punct(')') {
+                if matches!(self.token().kind, TokenKind::Eof) {
+                    self.error("unterminated instance argument list".into());
+                    return None;
+                }
+                let (parameter, argument_span) = self.expect_ident_value()?;
+                self.eat_op("=");
+                let (value, _) = self.expect_ident_value()?;
+                arguments.push(InstanceArgument {
+                    parameter,
+                    value,
+                    span: argument_span,
+                });
+                if !self.eat_punct(',') && !matches!(self.token().kind, TokenKind::Punct(')')) {
+                    self.error("expected `,` or `)` in instance arguments".into());
+                    return None;
+                }
+            }
+        }
+        self.expect_punct(';');
+        Some(InstanceDecl {
+            name,
+            model,
+            arguments,
+            span,
+        })
+    }
+
+    fn member_path(&mut self) -> Option<MemberPath> {
+        let (path, span) = self.expect_ident_value()?;
+        let Some((instance, member)) = path.split_once('.') else {
+            self.errors.push(ScientificError::Syntax {
+                message: format!("expected `instance.member`, found `{path}`"),
+                span,
+            });
+            return None;
+        };
+        if member.contains('.') || instance.is_empty() || member.is_empty() {
+            self.errors.push(ScientificError::Syntax {
+                message: format!("expected `instance.member`, found `{path}`"),
+                span,
+            });
+            return None;
+        }
+        Some(MemberPath {
+            instance: instance.to_owned(),
+            member: member.to_owned(),
+            span,
+        })
+    }
+
+    fn bind_decl(&mut self) -> Option<BindDecl> {
+        let span = self.token().span;
+        let consumer = self.member_path()?;
+        if !self.eat_op("<-") {
+            self.error("expected `<-` in `bind consumer.input <- producer.output;`".into());
+            return None;
+        }
+        let producer = self.member_path()?;
+        self.expect_punct(';');
+        Some(BindDecl {
+            consumer,
+            producer,
+            span,
+        })
+    }
+
+    fn output_decl(&mut self) -> Option<OutputDecl> {
+        let (name, span) = self.expect_ident_value()?;
+        let mut quantity_kind = None;
+        let mut quantity_kind_span = None;
+        let mut unit = None;
+        let mut unit_span = None;
+        if self.eat_punct(':')
+            && let Some((kind_name, kind_span)) = self.expect_ident_value()
+        {
+            quantity_kind = Some(QuantityKindId::new(kind_name));
+            quantity_kind_span = Some(kind_span);
+        }
+        if self.eat_punct('[') {
+            if let Some((unit_name, span)) = self.expect_ident_value() {
+                unit = Some(UnitId::new(unit_name));
+                unit_span = Some(span);
+            }
+            self.expect_punct(']');
+        }
+        let mut domain = None;
+        let mut domain_span = None;
+        if self.eat_ident("on")
+            && let Some((domain_name, span)) = self.expect_ident_value()
+        {
+            domain = Some(domain_name);
+            domain_span = Some(span);
+        }
+        if !self.eat_op("=") {
+            self.error(format!("output `{name}` must be defined with `= expr`"));
+            return None;
+        }
+        let value = self.expr(0)?;
+        if quantity_kind.is_none() && !matches!(value, Expr::Name { .. }) {
+            self.errors.push(ScientificError::Syntax {
+                message: format!(
+                    "output `{name}` needs a kind ascription unless its value is a bare field"
+                ),
+                span,
+            });
+        }
+        self.expect_punct(';');
+        Some(OutputDecl {
+            name,
+            quantity_kind,
+            quantity_kind_span,
+            unit,
+            unit_span,
+            domain,
+            domain_span,
+            value,
+            span,
+        })
     }
 
     fn model(&mut self) -> Option<ScientificModel> {
@@ -779,12 +1137,14 @@ impl Parser {
         self.expect_punct('{');
         let mut model = ScientificModel {
             name,
+            public: false,
             domains: vec![],
             fields: vec![],
             parameters: vec![],
             constants: vec![],
             sources: vec![],
             inputs: vec![],
+            outputs: vec![],
             providers: vec![],
             properties: vec![],
             constitutive_laws: vec![],
@@ -819,6 +1179,18 @@ impl Parser {
             } else if self.eat_ident("source") {
                 if let Some(x) = self.value_decl() {
                     model.sources.push(x);
+                }
+            } else if self.ident_is("output")
+                && !matches!(self.peek_ident(), Some("on"))
+                && !matches!(
+                    self.tokens.get(self.i + 1).map(|token| &token.kind),
+                    Some(TokenKind::Punct('{') | TokenKind::Op(_))
+                )
+            {
+                // Soft keyword: `output` opens a declaration only when followed by a name.
+                self.bump();
+                if let Some(x) = self.output_decl() {
+                    model.outputs.push(x);
                 }
             } else if self.ident_is("input") && matches!(self.peek_ident(), Some("field" | "value"))
             {
@@ -1973,17 +2345,105 @@ pub fn semantic_digest(module: &ScientificModule) -> String {
     blake3::hash(&bytes).to_hex().to_string()
 }
 
+fn format_provider(out: &mut String, p: &ProviderDecl) {
+    out.push_str(&format!(
+        "    provider {}({}) -> {}",
+        p.name,
+        p.inputs
+            .iter()
+            .map(|input| format!(
+                "{}: {}",
+                input.name,
+                input.kind.as_deref().unwrap_or("selector")
+            ))
+            .collect::<Vec<_>>()
+            .join(", "),
+        p.output_kind
+    ));
+    let has_body = p.unit.is_some()
+        || p.shape != ValueShape::Scalar
+        || p.locality != PropertyLocality::Pointwise
+        || p.differentiability != DerivativeContract::Symbolic
+        || !p.domain.is_empty();
+    if has_body {
+        out.push_str(" {\n");
+        if let Some(unit) = &p.unit {
+            out.push_str(&format!("        unit = {};\n", unit.as_str()));
+        }
+        if p.shape != ValueShape::Scalar {
+            out.push_str(&format!(
+                "        shape = {};\n",
+                provider_shape_name(&p.shape)
+            ));
+        }
+        if p.locality != PropertyLocality::Pointwise {
+            out.push_str(&format!(
+                "        locality = {};\n",
+                provider_locality_name(&p.locality)
+            ));
+        }
+        if p.differentiability != DerivativeContract::Symbolic {
+            out.push_str(&format!(
+                "        differentiability = {};\n",
+                provider_differentiability_name(&p.differentiability)
+            ));
+        }
+        if !p.domain.is_empty() {
+            out.push_str("        domain {\n");
+            for bound in &p.domain {
+                out.push_str(&format!(
+                    "            {} in [{} {}, {} {}];\n",
+                    bound.input,
+                    bound.min.value,
+                    bound.min.unit.as_str(),
+                    bound.max.value,
+                    bound.max.unit.as_str()
+                ));
+            }
+            out.push_str("        }\n");
+        }
+        out.push_str("    }");
+    }
+    out.push_str(";\n");
+}
+
 pub fn format_scientific_module(module: &ScientificModule) -> String {
     let mut out = String::new();
     out.push_str(&format!("module {};\n\n", module.name));
     for import in &module.imports {
-        out.push_str(&format!("use {};\n", import.value));
+        match (&import.alias, &import.items) {
+            (_, Some(items)) => {
+                let items = items
+                    .iter()
+                    .map(|item| match &item.alias {
+                        Some(alias) => format!("{} as {alias}", item.name),
+                        None => item.name.clone(),
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                out.push_str(&format!("use {}.{{{items}}};\n", import.module));
+            }
+            (Some(alias), None) if import.module.rsplit('.').next() == Some(alias.as_str()) => {
+                out.push_str(&format!("use {};\n", import.module));
+            }
+            (Some(alias), None) => {
+                out.push_str(&format!("use {} as {alias};\n", import.module));
+            }
+            (None, None) => out.push_str(&format!("use {};\n", import.module)),
+        }
     }
     if !module.imports.is_empty() {
         out.push('\n');
     }
+    for entry in &module.providers {
+        let visibility = if entry.public { "pub " } else { "" };
+        let mut rendered = String::new();
+        format_provider(&mut rendered, &entry.provider);
+        out.push_str(&format!("{visibility}{}", rendered.trim_start()));
+    }
     for model in &module.models {
-        out.push_str(&format!("model {} {{\n", model.name));
+        let visibility = if model.public { "pub " } else { "" };
+        out.push_str(&format!("{visibility}model {} {{\n", model.name));
         for d in &model.domains {
             out.push_str(&format!(
                 "    domain {} {{ dimension = {}; coordinates = {}; }}\n",
@@ -2074,66 +2534,30 @@ pub fn format_scientific_module(module: &ScientificModule) -> String {
                 input.name
             ));
         }
-        for p in &model.providers {
+        for output in &model.outputs {
+            let ty = output
+                .quantity_kind
+                .as_ref()
+                .map(|x| format!(": {}", x.as_str()))
+                .unwrap_or_default();
+            let unit = output
+                .unit
+                .as_ref()
+                .map(|x| format!(" [{}]", x.as_str()))
+                .unwrap_or_default();
+            let domain = output
+                .domain
+                .as_ref()
+                .map(|x| format!(" on {x}"))
+                .unwrap_or_default();
             out.push_str(&format!(
-                "    provider {}({}) -> {}",
-                p.name,
-                p.inputs
-                    .iter()
-                    .map(|input| format!(
-                        "{}: {}",
-                        input.name,
-                        input.kind.as_deref().unwrap_or("selector")
-                    ))
-                    .collect::<Vec<_>>()
-                    .join(", "),
-                p.output_kind
+                "    output {}{ty}{unit}{domain} = {};\n",
+                output.name,
+                format_expr(&output.value)
             ));
-            let has_body = p.unit.is_some()
-                || p.shape != ValueShape::Scalar
-                || p.locality != PropertyLocality::Pointwise
-                || p.differentiability != DerivativeContract::Symbolic
-                || !p.domain.is_empty();
-            if has_body {
-                out.push_str(" {\n");
-                if let Some(unit) = &p.unit {
-                    out.push_str(&format!("        unit = {};\n", unit.as_str()));
-                }
-                if p.shape != ValueShape::Scalar {
-                    out.push_str(&format!(
-                        "        shape = {};\n",
-                        provider_shape_name(&p.shape)
-                    ));
-                }
-                if p.locality != PropertyLocality::Pointwise {
-                    out.push_str(&format!(
-                        "        locality = {};\n",
-                        provider_locality_name(&p.locality)
-                    ));
-                }
-                if p.differentiability != DerivativeContract::Symbolic {
-                    out.push_str(&format!(
-                        "        differentiability = {};\n",
-                        provider_differentiability_name(&p.differentiability)
-                    ));
-                }
-                if !p.domain.is_empty() {
-                    out.push_str("        domain {\n");
-                    for bound in &p.domain {
-                        out.push_str(&format!(
-                            "            {} in [{} {}, {} {}];\n",
-                            bound.input,
-                            bound.min.value,
-                            bound.min.unit.as_str(),
-                            bound.max.value,
-                            bound.max.unit.as_str()
-                        ));
-                    }
-                    out.push_str("        }\n");
-                }
-                out.push_str("    }");
-            }
-            out.push_str(";\n");
+        }
+        for p in &model.providers {
+            format_provider(&mut out, p);
         }
         for p in &model.properties {
             out.push_str(&format!(
@@ -2253,6 +2677,47 @@ pub fn format_scientific_module(module: &ScientificModule) -> String {
                 out.push(')');
             }
             out.push_str(";\n");
+        }
+        out.push_str("}\n\n");
+    }
+    for system in &module.systems {
+        let visibility = if system.public { "pub " } else { "" };
+        out.push_str(&format!("{visibility}system {} {{\n", system.name));
+        for d in &system.domains {
+            out.push_str(&format!(
+                "    domain {} {{ dimension = {}; coordinates = {}; }}\n",
+                d.name,
+                d.dimension,
+                coordinate_name(&d.coordinates)
+            ));
+        }
+        for instance in &system.instances {
+            let arguments = if instance.arguments.is_empty() {
+                String::new()
+            } else {
+                format!(
+                    "({})",
+                    instance
+                        .arguments
+                        .iter()
+                        .map(|argument| format!("{} = {}", argument.parameter, argument.value))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
+            };
+            out.push_str(&format!(
+                "    instance {}: {}{arguments};\n",
+                instance.name, instance.model
+            ));
+        }
+        for bind in &system.binds {
+            out.push_str(&format!(
+                "    bind {}.{} <- {}.{};\n",
+                bind.consumer.instance,
+                bind.consumer.member,
+                bind.producer.instance,
+                bind.producer.member
+            ));
         }
         out.push_str("}\n\n");
     }
@@ -2482,20 +2947,20 @@ pub fn resolve_modules(
         for import in &module.imports {
             let text =
                 source
-                    .load(&import.value)
+                    .load(&import.module)
                     .ok_or_else(|| ScientificError::MissingModule {
-                        name: import.value.clone(),
+                        name: import.module.clone(),
                         span: import.span,
                     })?;
             let parsed =
                 parse_scientific_module(&text).map_err(|e| e.into_iter().next().unwrap())?;
-            if matches!(state.get(&import.value), Some(1)) {
+            if matches!(state.get(&import.module), Some(1)) {
                 return Err(ScientificError::ImportCycle {
-                    name: import.value.clone(),
+                    name: import.module.clone(),
                     span: import.span,
                 });
             }
-            visit(&import.value, parsed, source, state, out)?;
+            visit(&import.module, parsed, source, state, out)?;
         }
         state.insert(name.into(), 2);
         out.insert(name.into(), module);
@@ -2519,6 +2984,170 @@ pub fn resolve_modules(
         modules,
         semantic_digest: digest,
         module_digests,
+    })
+}
+
+/// One module of an ordered [`ModuleClosure`]: its dotted name, source text, digest, and parse.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ClosureModule {
+    pub name: String,
+    pub digest: ModuleDigest,
+    pub source: String,
+    pub module: ScientificModule,
+}
+
+/// The ordered module closure of a root module (`sinbad/ARCHITECTURE.md` §2.4): every module
+/// the root transitively imports, dependencies before dependents, root last, each with its
+/// bytes and [`ModuleDigest`]. Sinbad owns the lock file; this is what it freezes.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct ModuleClosure {
+    pub schema: String,
+    pub root: String,
+    pub modules: Vec<ClosureModule>,
+    /// `blake3` over the ordered `(name, digest)` list.
+    pub identity: String,
+}
+
+pub const MODULE_CLOSURE_SCHEMA: &str = "scientia-module-closure/1";
+
+impl ModuleClosure {
+    pub fn module(&self, name: &str) -> Option<&ClosureModule> {
+        self.modules.iter().find(|module| module.name == name)
+    }
+
+    pub fn root_module(&self) -> &ClosureModule {
+        self.module(&self.root)
+            .expect("a module closure always contains its root")
+    }
+
+    pub fn by_digest(&self, digest: &ModuleDigest) -> Option<&ClosureModule> {
+        self.modules.iter().find(|module| &module.digest == digest)
+    }
+
+    /// The [`GlobalDeclId`] of a declaration of the named module, if that module declares it.
+    pub fn declaration(&self, module: &str, kind: DeclKind, name: &str) -> Option<GlobalDeclId> {
+        let entry = self.module(module)?;
+        let declared = match kind {
+            DeclKind::Model => entry.module.models.iter().any(|model| model.name == name),
+            DeclKind::System => entry
+                .module
+                .systems
+                .iter()
+                .any(|system| system.name == name),
+            DeclKind::Provider => entry
+                .module
+                .providers
+                .iter()
+                .any(|provider| provider.provider.name == name),
+        };
+        declared.then(|| GlobalDeclId {
+            module: entry.digest.clone(),
+            kind,
+            name: name.to_owned(),
+        })
+    }
+
+    /// Is the declaration `pub`?
+    pub fn is_public(&self, id: &GlobalDeclId) -> bool {
+        let Some(entry) = self.by_digest(&id.module) else {
+            return false;
+        };
+        match id.kind {
+            DeclKind::Model => entry
+                .module
+                .models
+                .iter()
+                .any(|model| model.name == id.name && model.public),
+            DeclKind::System => entry
+                .module
+                .systems
+                .iter()
+                .any(|system| system.name == id.name && system.public),
+            DeclKind::Provider => entry
+                .module
+                .providers
+                .iter()
+                .any(|provider| provider.provider.name == id.name && provider.public),
+        }
+    }
+}
+
+/// Resolve the ordered module closure of `root_source` through `source`. Missing modules and
+/// import cycles are the same [`ScientificError`]s `resolve_modules` reports.
+pub fn resolve_module_closure(
+    root_source: &str,
+    source: &(impl ModuleSource + ?Sized),
+) -> Result<ModuleClosure, ScientificError> {
+    fn visit(
+        name: &str,
+        text: String,
+        module: ScientificModule,
+        source: &(impl ModuleSource + ?Sized),
+        state: &mut BTreeMap<String, u8>,
+        out: &mut Vec<ClosureModule>,
+    ) -> Result<(), ScientificError> {
+        match state.get(name).copied() {
+            Some(1) => {
+                return Err(ScientificError::ImportCycle {
+                    name: name.into(),
+                    span: module.span,
+                });
+            }
+            Some(2) => return Ok(()),
+            _ => {}
+        }
+        state.insert(name.into(), 1);
+        for import in &module.imports {
+            let text =
+                source
+                    .load(&import.module)
+                    .ok_or_else(|| ScientificError::MissingModule {
+                        name: import.module.clone(),
+                        span: import.span,
+                    })?;
+            let parsed =
+                parse_scientific_module(&text).map_err(|e| e.into_iter().next().unwrap())?;
+            if matches!(state.get(&import.module), Some(1)) {
+                return Err(ScientificError::ImportCycle {
+                    name: import.module.clone(),
+                    span: import.span,
+                });
+            }
+            visit(&import.module, text, parsed, source, state, out)?;
+        }
+        state.insert(name.into(), 2);
+        out.push(ClosureModule {
+            name: name.into(),
+            digest: ModuleDigest::of(&module),
+            source: text,
+            module,
+        });
+        Ok(())
+    }
+    let root = parse_scientific_module(root_source).map_err(|e| e.into_iter().next().unwrap())?;
+    let root_name = root.name.clone();
+    let mut state = BTreeMap::new();
+    let mut modules = Vec::new();
+    visit(
+        &root_name,
+        root_source.to_owned(),
+        root,
+        source,
+        &mut state,
+        &mut modules,
+    )?;
+    let listing = modules
+        .iter()
+        .map(|module| (module.name.clone(), module.digest.0.clone()))
+        .collect::<Vec<_>>();
+    let identity = blake3::hash(&serde_json::to_vec(&listing).unwrap())
+        .to_hex()
+        .to_string();
+    Ok(ModuleClosure {
+        schema: MODULE_CLOSURE_SCHEMA.into(),
+        root: root_name,
+        modules,
+        identity,
     })
 }
 

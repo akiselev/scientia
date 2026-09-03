@@ -1,9 +1,12 @@
-//! GX-F4: `resolve_modules` wired into `compile_semantics_with` through a `ModuleSource`
-//! (contract: `NoImports` refuses every `use` for hermetic callers, `FilesystemModuleSource`
-//! maps a dotted module name to a `.res` file under a root). Imported modules contribute only
-//! `provider` declarations into the importing model's scope; cross-module duplicates are
-//! `RESOLVE_DUPLICATE_NAME`, import cycles are `RESOLVE_IMPORT_CYCLE`, missing modules are
-//! `RESOLVE_MISSING_MODULE`.
+//! GX-F4 / SC-W1: module resolution wired into `compile_semantics_with` through a
+//! `ModuleSource` (contract: `NoImports` refuses every `use` for hermetic callers,
+//! `FilesystemModuleSource` maps a dotted module name to a `.res` file under a root). Since
+//! SC-W1 imports are scoped and by reference (`sinbad/ARCHITECTURE.md` §3.2): a selective
+//! `use m.{p};` brings the module-level `pub provider p` into scope under its name, an alias
+//! import `use m;` / `use m as x;` brings every `pub` declaration under `x.name`; nothing is
+//! flattened. Cross-module duplicates are `RESOLVE_DUPLICATE_NAME`, import cycles are
+//! `RESOLVE_IMPORT_CYCLE`, missing modules are `RESOLVE_MISSING_MODULE`, private or unknown
+//! items are `RESOLVE_PRIVATE_DECLARATION` / `RESOLVE_UNKNOWN_IMPORT`.
 
 use quantitas::{QuantityKindRegistry, UnitRegistry};
 use scientia::{
@@ -22,18 +25,16 @@ fn registries() -> (UnitRegistry, QuantityKindRegistry) {
 const CATALOG: &str = r#"
 module physics.providers.thermal;
 
-model ThermalCatalog {
-  domain Placeholder { dimension = 1; coordinates = cartesian; }
-  provider thermal_conductivity(T: ThermodynamicTemperature) -> ThermalConductivity {
-    unit = W/(m*K);
-    domain { T in [200 K, 2000 K]; }
-  }
+pub provider thermal_conductivity(T: ThermodynamicTemperature) -> ThermalConductivity {
+  unit = W/(m*K);
+  domain { T in [200 K, 2000 K]; }
 }
+provider private_density(T: ThermodynamicTemperature) -> Density;
 "#;
 
 const IMPORTING_MODEL: &str = r#"
 module gx_f4.importing;
-use physics.providers.thermal;
+use physics.providers.thermal.{thermal_conductivity};
 
 model Heat {
   domain Omega { dimension = 2; coordinates = cartesian; }
@@ -95,7 +96,7 @@ fn imported_provider_becomes_a_required_slot_with_typed_inputs() {
 fn a_local_provider_that_shadows_an_imported_one_is_a_cross_module_duplicate() {
     const SHADOWING_MODEL: &str = r#"
 module gx_f4.shadowing;
-use physics.providers.thermal;
+use physics.providers.thermal.{thermal_conductivity};
 
 model Heat {
   domain Omega { dimension = 2; coordinates = cartesian; }

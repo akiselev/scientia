@@ -5,12 +5,14 @@
 //! dimensions/kinds, frame, and role metadata to every expression node.
 
 use crate::id::span_independent_digest;
-use crate::scientific::ModuleDigest;
 use crate::scientific::{
     BinaryOp, BoundaryConditionKind, CoordinateSystem, DerivativeContract, Expr, FieldDecl,
     FieldRole, InputBounds, InputDecl, InputDeclKind, Measure, OutOfValidityPolicy, PropertyDomain,
     PropertyLocality, ProviderDecl, ScientificModel as SourceModel, ScientificModule, SpaceSpec,
     UnaryOp, ValueDecl, ValueShape, canonicalize_authored_quantity,
+};
+use crate::scientific::{
+    DeclKind, GlobalDeclId, ModuleClosure, ModuleDigest, OutputDecl, resolve_module_closure,
 };
 use crate::source::{RelatedSpan, SourceDiagnostic, SourceLocator, SourceSeverity, SourceSpan};
 use quantitas::{
@@ -124,6 +126,19 @@ pub struct SemanticModule {
     pub schema: String,
     pub name: String,
     pub models: Vec<SemanticModel>,
+    /// Resolved `use` imports (SC-W1 §2.1): alias or selective name to the declaration it
+    /// references. Skipped when empty so pre-SC arenas keep their digest.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub imports: Vec<SemanticImport>,
+    pub span: SourceSpan,
+}
+
+/// One resolved import binding: `name` is the alias (`electrical` for `use physics.electrical;`
+/// or `... as electrical;`) or the selective item name in the importing module's namespace.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SemanticImport {
+    pub name: String,
+    pub target: GlobalDeclId,
     pub span: SourceSpan,
 }
 
@@ -131,6 +146,10 @@ pub struct SemanticModule {
 pub struct SemanticCompilation {
     pub source: ScientificModule,
     pub semantic: SemanticModule,
+    /// The ordered module closure the root was compiled in (SC-W1 §2.4). Empty for a
+    /// compilation reconstructed without one.
+    #[serde(default)]
+    pub closure: ModuleClosure,
     /// Non-fatal diagnostics from elaboration (today: only `RESOLVE_UNDECLARED_PROVIDER`).
     /// Excluded from `semantic`'s arena so it never perturbs `semantic_arena_digest`.
     #[serde(default)]
@@ -202,41 +221,215 @@ pub fn compile_semantics_with(
     registries: Registries<'_>,
     modules: &dyn crate::scientific::ModuleSource,
 ) -> Result<SemanticCompilation, Vec<SourceDiagnostic>> {
-    let parsed = crate::scientific::parse_scientific_module_diagnostics(source)?;
-    let root_name = parsed.name.clone();
-    let resolved = crate::scientific::resolve_modules(parsed, modules)
-        .map_err(|error| vec![error.diagnostic()])?;
-    let root = resolved
-        .modules
-        .get(&root_name)
-        .expect("resolve_modules always retains the root module it was given")
-        .clone();
-    let imported = imported_providers(&root_name, &resolved);
-    let (semantic, advisories) = elaborate_module_with(&root, &imported, registries)?;
+    // Parse first so syntax diagnostics keep their full list and spans.
+    crate::scientific::parse_scientific_module_diagnostics(source)?;
+    let closure =
+        resolve_module_closure(source, modules).map_err(|error| vec![error.diagnostic()])?;
+    compile_module_in_closure(&closure, &closure.root, registries)
+}
+
+/// Compile one module of `closure` (SC-W1 §2.1): resolve its `use` imports by reference to
+/// `pub` declarations of the target modules, elaborate its models with the imported provider
+/// signatures in scope, and record the resolved imports on the arena.
+pub fn compile_module_in_closure(
+    closure: &ModuleClosure,
+    module_name: &str,
+    registries: Registries<'_>,
+) -> Result<SemanticCompilation, Vec<SourceDiagnostic>> {
+    let entry = closure.module(module_name).ok_or_else(|| {
+        vec![SourceDiagnostic::error(
+            "RESOLVE_MISSING_MODULE",
+            format!("module `{module_name}` is not in the closure"),
+            SourceSpan::default(),
+        )]
+    })?;
+    let root = entry.module.clone();
+    let (imports, imported) = resolve_imports(closure, &root)?;
+    let imported_refs = imported.iter().collect::<Vec<_>>();
+    let (mut semantic, advisories) = elaborate_module_with(&root, &imported_refs, registries)?;
+    semantic.imports = imports;
     Ok(SemanticCompilation {
         source: root,
         semantic,
+        closure: closure.clone(),
         advisories,
     })
 }
 
-/// Every `provider` declared by a module other than `root_name`, from every model of that
-/// module, in deterministic (module name, then declaration order) order -- contract GX-F4's
-/// "other declaration kinds are NOT imported": only providers cross the module boundary.
-fn imported_providers<'a>(
-    root_name: &str,
-    resolved: &'a crate::scientific::ResolvedModules,
-) -> Vec<&'a ProviderDecl> {
-    resolved
-        .modules
+/// Resolve a module's `use` declarations against the closure. Returns the import table and the
+/// provider signatures that enter the module's models' scope: selectively imported `pub
+/// provider`s under their (aliased) name, and every `pub provider` of an alias import under
+/// `alias.name`. Models and systems are imported by reference only (they are instanced, never
+/// copied).
+fn resolve_imports(
+    closure: &ModuleClosure,
+    module: &ScientificModule,
+) -> Result<(Vec<SemanticImport>, Vec<ProviderDecl>), Vec<SourceDiagnostic>> {
+    let mut diagnostics = Vec::new();
+    let mut imports: Vec<SemanticImport> = Vec::new();
+    let mut providers = Vec::new();
+    let local_names = module
+        .models
         .iter()
-        .filter(|(name, _)| name.as_str() != root_name)
-        .flat_map(|(_, module)| {
+        .map(|model| model.name.as_str())
+        .chain(module.systems.iter().map(|system| system.name.as_str()))
+        .chain(
             module
+                .providers
+                .iter()
+                .map(|provider| provider.provider.name.as_str()),
+        )
+        .collect::<std::collections::BTreeSet<_>>();
+    let mut bind = |name: &str,
+                    target: GlobalDeclId,
+                    span: SourceSpan,
+                    diagnostics: &mut Vec<SourceDiagnostic>| {
+        if local_names.contains(name) {
+            diagnostics.push(SourceDiagnostic::error(
+                "RESOLVE_AMBIGUOUS_PATH",
+                format!("import `{name}` collides with a declaration of this module"),
+                span,
+            ));
+            return;
+        }
+        if let Some(previous) = imports.iter().find(|import| import.name == name) {
+            if previous.target != target {
+                diagnostics.push(SourceDiagnostic::error(
+                    "RESOLVE_DUPLICATE_IMPORT",
+                    format!("import `{name}` is bound twice to different declarations"),
+                    span,
+                ));
+            }
+            return;
+        }
+        imports.push(SemanticImport {
+            name: name.to_owned(),
+            target,
+            span,
+        });
+    };
+    for import in &module.imports {
+        let Some(target) = closure.module(&import.module) else {
+            diagnostics.push(SourceDiagnostic::error(
+                "RESOLVE_MISSING_MODULE",
+                format!("module `{}` is not in the closure", import.module),
+                import.span,
+            ));
+            continue;
+        };
+        let public_declarations = || {
+            target
+                .module
                 .models
                 .iter()
-                .flat_map(|model| model.providers.iter())
-        })
+                .filter(|model| model.public)
+                .map(|model| (DeclKind::Model, model.name.clone()))
+                .chain(
+                    target
+                        .module
+                        .systems
+                        .iter()
+                        .filter(|system| system.public)
+                        .map(|system| (DeclKind::System, system.name.clone())),
+                )
+                .chain(
+                    target
+                        .module
+                        .providers
+                        .iter()
+                        .filter(|provider| provider.public)
+                        .map(|provider| (DeclKind::Provider, provider.provider.name.clone())),
+                )
+                .collect::<Vec<_>>()
+        };
+        match (&import.alias, &import.items) {
+            (_, Some(items)) => {
+                for item in items {
+                    let candidates = [DeclKind::Model, DeclKind::System, DeclKind::Provider]
+                        .into_iter()
+                        .filter_map(|kind| closure.declaration(&import.module, kind, &item.name))
+                        .collect::<Vec<_>>();
+                    let Some(id) = candidates.into_iter().next() else {
+                        diagnostics.push(SourceDiagnostic::error(
+                            "RESOLVE_UNKNOWN_IMPORT",
+                            format!(
+                                "module `{}` declares nothing named `{}`",
+                                import.module, item.name
+                            ),
+                            item.span,
+                        ));
+                        continue;
+                    };
+                    if !closure.is_public(&id) {
+                        diagnostics.push(SourceDiagnostic::error(
+                            "RESOLVE_PRIVATE_DECLARATION",
+                            format!(
+                                "`{}` in module `{}` is private; declare it `pub` to import it",
+                                item.name, import.module
+                            ),
+                            item.span,
+                        ));
+                        continue;
+                    }
+                    let name = item.alias.clone().unwrap_or_else(|| item.name.clone());
+                    if id.kind == DeclKind::Provider
+                        && let Some(provider) = target
+                            .module
+                            .providers
+                            .iter()
+                            .find(|provider| provider.provider.name == item.name)
+                    {
+                        let mut provider = provider.provider.clone();
+                        provider.name = name.clone();
+                        providers.push(provider);
+                    }
+                    bind(&name, id, item.span, &mut diagnostics);
+                }
+            }
+            (Some(alias), None) => {
+                let declarations = public_declarations();
+                for (kind, name) in &declarations {
+                    let id = GlobalDeclId {
+                        module: target.digest.clone(),
+                        kind: *kind,
+                        name: name.clone(),
+                    };
+                    if *kind == DeclKind::Provider
+                        && let Some(provider) = target
+                            .module
+                            .providers
+                            .iter()
+                            .find(|provider| &provider.provider.name == name)
+                    {
+                        let mut provider = provider.provider.clone();
+                        provider.name = format!("{alias}.{name}");
+                        providers.push(provider);
+                    }
+                    bind(
+                        &format!("{alias}.{name}"),
+                        id,
+                        import.span,
+                        &mut diagnostics,
+                    );
+                }
+            }
+            (None, None) => {}
+        }
+    }
+    if diagnostics.is_empty() {
+        Ok((imports, providers))
+    } else {
+        Err(diagnostics)
+    }
+}
+
+/// The module-level providers a model's scope sees: every `provider` of its own module (public
+/// or not) plus the imported ones.
+fn module_scope_providers(module: &ScientificModule) -> Vec<ProviderDecl> {
+    module
+        .providers
+        .iter()
+        .map(|provider| provider.provider.clone())
         .collect()
 }
 
@@ -333,6 +526,8 @@ pub enum SemanticRole {
     Observable,
     Invariant,
     Verification,
+    /// An `output` declaration's value (SC-W1 §3.3): a declared expression over owned symbols.
+    Output,
     Literal,
     Intrinsic,
     /// The type role of a `SemanticExprKind::ProviderCall` expression, distinct from
@@ -656,6 +851,11 @@ pub enum SemanticDeclarationKind {
     },
     /// `input value x: Kind;` (SC §3.3): one externally supplied datum; role `Parameter`.
     InputValue,
+    /// `output x: Kind on D = expr;` (SC-W1 §3.3): a bindable output on `domain`.
+    Output {
+        value: ExprId,
+        domain: DomainId,
+    },
     Property {
         value: ExprId,
     },
@@ -736,10 +936,13 @@ pub fn elaborate_module_with(
     registries: Registries<'_>,
 ) -> Result<(SemanticModule, Vec<SourceDiagnostic>), Vec<SourceDiagnostic>> {
     let mut diagnostics = vec![];
+    let scope = module_scope_providers(module);
+    let mut in_scope = scope.iter().collect::<Vec<_>>();
+    in_scope.extend(imported_providers.iter().copied());
     let models = module
         .models
         .iter()
-        .map(|model| Elaborator::new(model, registries, imported_providers).run(&mut diagnostics))
+        .map(|model| Elaborator::new(model, registries, &in_scope).run(&mut diagnostics))
         .collect();
     diagnostics.sort_by(|left, right| {
         (left.span.start, left.span.end, &left.code, &left.message).cmp(&(
@@ -759,6 +962,7 @@ pub fn elaborate_module_with(
         Ok((
             SemanticModule {
                 schema: SEMANTIC_SCHEMA.into(),
+                imports: vec![],
                 name: module.name.clone(),
                 models,
                 span: module.span,
@@ -1637,6 +1841,9 @@ impl<'a> Elaborator<'a> {
             };
             self.push_declaration(&input.name, role, domain, kind, input.span);
         }
+        for output in &self.source.outputs {
+            self.elaborate_output(output, diagnostics);
+        }
         for property in &self.source.properties {
             let expr = self.elaborate_expr(&property.value, diagnostics);
             self.update_deferred_symbol(&property.name, expr);
@@ -1820,6 +2027,77 @@ impl<'a> Elaborator<'a> {
             None,
             SemanticDeclarationKind::Value { value: expression },
             value.span,
+        );
+    }
+
+    /// `output NAME: Kind on D = expr;` (SC-W1 §3.3). The domain is the declared one or, for
+    /// a bare-field output, the field's domain; a declared kind is checked against the
+    /// expression's dimension when both are known.
+    fn elaborate_output(&mut self, output: &OutputDecl, diagnostics: &mut Vec<SourceDiagnostic>) {
+        let value = self.elaborate_expr(&output.value, diagnostics);
+        let domain = match &output.domain {
+            Some(name) => {
+                self.resolve_domain(name, output.domain_span.unwrap_or(output.span), diagnostics)
+            }
+            None => {
+                let symbol_domain = match &self.expressions[value.index()].kind {
+                    SemanticExprKind::Symbol { symbol } => self.symbols[symbol.index()].domain,
+                    _ => None,
+                };
+                if symbol_domain.is_none() {
+                    diagnostics.push(error(
+                        "RESOLVE_OUTPUT_DOMAIN",
+                        format!(
+                            "output `{}` needs `on <domain>` unless its value is a field on a \
+                             domain",
+                            output.name
+                        ),
+                        output.span,
+                    ));
+                }
+                symbol_domain
+            }
+        };
+        let (dimension, kind) = self.declared_quantity_type(
+            output.quantity_kind.as_ref(),
+            output.quantity_kind_span,
+            output.unit.as_ref(),
+            output.unit_span,
+            KindSeverity::Advisory,
+            diagnostics,
+        );
+        let value_ty = &self.expressions[value.index()].ty;
+        if let (Some(declared), Some(actual)) = (dimension, value_ty.dimension)
+            && declared != actual
+        {
+            diagnostics.push(error(
+                "TYPE_OUTPUT_DIMENSION",
+                format!(
+                    "output `{}` declares dimension {declared} but its value has dimension \
+                     {actual}",
+                    output.name
+                ),
+                output.value.span(),
+            ));
+        }
+        if let (Some(declared), Some(actual)) = (&kind, &value_ty.quantity_kind)
+            && declared != actual
+            && dimension.is_some()
+            && dimension == value_ty.dimension
+        {
+            // Same dimension, different kind: an advisory-level mismatch today (kind
+            // compatibility is advisory throughout elaboration); keep the declared kind.
+        }
+        let Some(domain) = domain else {
+            return;
+        };
+        self.require_frame(value, domain, output.value.span(), diagnostics);
+        self.push_declaration(
+            &output.name,
+            SemanticRole::Output,
+            Some(domain),
+            SemanticDeclarationKind::Output { value, domain },
+            output.span,
         );
     }
 

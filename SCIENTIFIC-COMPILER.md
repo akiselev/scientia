@@ -22,11 +22,16 @@ Each arrow is a compiler pass with diagnostics, source provenance, and an eviden
 changes mathematical form. These are successive artifacts, not interchangeable frontends or
 temporary representations.
 
-Planned, not landed: the SC composition layer designed in `sinbad/ARCHITECTURE.md` inserts a
-`ScientificSystem` between the per-model semantic arena and the operator artifacts — instances of
-imported models, `bind`/`connect`, connector ports as open boundary unknowns, system-level ids with
-an origin map — while every per-model FC2–FC5 artifact stays as it is and is reused by digest. A
-bare `model` becomes the implicit one-instance system, so there is one compile path.
+The SC composition layer designed in `sinbad/ARCHITECTURE.md` inserts a `ScientificSystem`
+(`scientia-system/1`) between the per-model semantic arena and the operator artifacts: instances
+of imported `pub model`s, same-domain `bind` chains, system-level ids (`SysVarId`, `SysResId`,
+`SysRegionId`) with an origin map, and instance-prefixed binding slots — while every per-model
+FC2–FC5 artifact stays as it is and is reused by digest. A bare `model` is the implicit
+one-instance system, so there is one compile path. `scientia-operator-system/2` keys blocks by
+system ids; a `bind` becomes a `Composed` block whose producer `output` kernel (the FC2–FC5 chain
+over the synthetic functional `∫ G · w`) feeds the consumer's input operand through a Malleus
+`KernelComposition`, never by rewriting either kernel. Connector ports, `connect`, domain
+relations, and transferred chains are SC-W2.
 
 ## Repository boundaries
 

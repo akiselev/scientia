@@ -561,7 +561,7 @@ fn control_support(model: &SemanticModel, slot: &BindingSlot) -> String {
 /// Close `expression`'s direct symbols over property, constitutive, and model-defined value
 /// definitions, so the objective's dependency set names the fields and case-bound symbols it
 /// really reads.
-fn close_dependencies(
+pub(crate) fn close_dependencies(
     model: &SemanticModel,
     expression: ExprId,
     out: &mut BTreeSet<SymbolId>,
@@ -592,7 +592,7 @@ fn close_dependencies(
 }
 
 /// Provider names called (directly or through definitions) by `expression`.
-fn collect_provider_slots(
+pub(crate) fn collect_provider_slots(
     model: &SemanticModel,
     expression: ExprId,
     out: &mut BTreeSet<String>,

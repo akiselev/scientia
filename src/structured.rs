@@ -431,7 +431,8 @@ fn lower_primal_output(
     for axis in free_axes {
         insert_axis(*axis, &mut axes, &mut axis_definitions)?;
     }
-    let expression = peel_reductions(expression, &mut axes, &mut axis_definitions)?;
+    let hoisted = hoist_reductions(expression);
+    let expression = peel_reductions(&hoisted, &mut axes, &mut axis_definitions)?;
     let axis_ids = axes
         .iter()
         .enumerate()
@@ -562,6 +563,130 @@ fn insert_axis(
     definitions.insert(axis.id, axis);
     axes.push(axis);
     Ok(())
+}
+
+/// Sum distributivity: `a * Σ_i f` is `Σ_i a * f` when `a` does not reference axis `i` (and
+/// likewise for `Σ_i f * a`, `-Σ_i f`, and `Σ_i f / a`), so a point function whose reduction
+/// sits inside a product (an output kernel `σ · |∇V|²`, SC-W1) lowers through the same
+/// enclosing-nest rule as a residual output. Applied bottom-up; nothing else is rewritten.
+fn hoist_reductions(expression: &TensorScalarExpr) -> TensorScalarExpr {
+    fn references_axis(expression: &TensorScalarExpr, axis: TensorAxisId) -> bool {
+        match expression {
+            TensorScalarExpr::Constant { .. } => false,
+            TensorScalarExpr::Input { indices, .. } => indices.contains(&axis),
+            TensorScalarExpr::Unary { arg, .. } => references_axis(arg, axis),
+            TensorScalarExpr::Binary { lhs, rhs, .. } => {
+                references_axis(lhs, axis) || references_axis(rhs, axis)
+            }
+            TensorScalarExpr::IndexEqual { lhs, rhs } => *lhs == axis || *rhs == axis,
+            TensorScalarExpr::Reduction {
+                axis: inner,
+                expression,
+                ..
+            } => inner.id == axis || references_axis(expression, axis),
+        }
+    }
+    match expression {
+        TensorScalarExpr::Unary {
+            op: TensorUnaryOp::Neg,
+            arg,
+        } => match hoist_reductions(arg) {
+            TensorScalarExpr::Reduction {
+                op,
+                axis,
+                expression,
+            } => TensorScalarExpr::Reduction {
+                op,
+                axis,
+                expression: Box::new(hoist_reductions(&TensorScalarExpr::Unary {
+                    op: TensorUnaryOp::Neg,
+                    arg: expression,
+                })),
+            },
+            other => TensorScalarExpr::Unary {
+                op: TensorUnaryOp::Neg,
+                arg: Box::new(other),
+            },
+        },
+        TensorScalarExpr::Unary { op, arg } => TensorScalarExpr::Unary {
+            op: *op,
+            arg: Box::new(hoist_reductions(arg)),
+        },
+        TensorScalarExpr::Binary { op, lhs, rhs } => {
+            let lhs = hoist_reductions(lhs);
+            let rhs = hoist_reductions(rhs);
+            match (op, lhs, rhs) {
+                (
+                    TensorBinaryOp::Mul,
+                    TensorScalarExpr::Reduction {
+                        op: reduction,
+                        axis,
+                        expression,
+                    },
+                    other,
+                ) if !references_axis(&other, axis.id) => TensorScalarExpr::Reduction {
+                    op: reduction,
+                    axis,
+                    expression: Box::new(hoist_reductions(&TensorScalarExpr::Binary {
+                        op: TensorBinaryOp::Mul,
+                        lhs: expression,
+                        rhs: Box::new(other),
+                    })),
+                },
+                (
+                    TensorBinaryOp::Mul | TensorBinaryOp::Div,
+                    other,
+                    TensorScalarExpr::Reduction {
+                        op: reduction,
+                        axis,
+                        expression,
+                    },
+                ) if *op == TensorBinaryOp::Mul && !references_axis(&other, axis.id) => {
+                    TensorScalarExpr::Reduction {
+                        op: reduction,
+                        axis,
+                        expression: Box::new(hoist_reductions(&TensorScalarExpr::Binary {
+                            op: TensorBinaryOp::Mul,
+                            lhs: Box::new(other),
+                            rhs: expression,
+                        })),
+                    }
+                }
+                (
+                    TensorBinaryOp::Div,
+                    TensorScalarExpr::Reduction {
+                        op: reduction,
+                        axis,
+                        expression,
+                    },
+                    other,
+                ) if !references_axis(&other, axis.id) => TensorScalarExpr::Reduction {
+                    op: reduction,
+                    axis,
+                    expression: Box::new(hoist_reductions(&TensorScalarExpr::Binary {
+                        op: TensorBinaryOp::Div,
+                        lhs: expression,
+                        rhs: Box::new(other),
+                    })),
+                },
+                (op, lhs, rhs) => TensorScalarExpr::Binary {
+                    op: *op,
+                    lhs: Box::new(lhs),
+                    rhs: Box::new(rhs),
+                },
+            }
+        }
+        TensorScalarExpr::Reduction {
+            op,
+            axis,
+            expression,
+        } => TensorScalarExpr::Reduction {
+            op: *op,
+            axis: *axis,
+            expression: Box::new(hoist_reductions(expression)),
+        },
+        other => other.clone(),
+    }
 }
 
 fn peel_reductions<'a>(
