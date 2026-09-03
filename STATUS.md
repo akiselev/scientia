@@ -287,8 +287,14 @@ solving over Methodus and is not part of the simulation execution dependency gra
   the §3.8 example in today's grammar) elaborates with one SCC `{electrical, thermal}`, both
   binds `Composed`, `thermal/input/Q` on the kernel-input path with validated compositions and
   JVPs, `electrical/input/temperature` on the provider-input path through `sigma`; identities
-  are deterministic and round-trip. Value agreement with monolithic 08 at sampled states
-  (SC3a) is not yet executed. Test 4: dropping `bind thermal.Q` opens `thermal/input/Q`
+  are deterministic and round-trip. **SC3a, kernel level:** at three sampled states the
+  composed Joule chain (the `joule_heat` output kernel feeding the thermal residual's `Q`
+  operand through the Malleus composition, executed by `Interpreter::run_composition`)
+  reproduces the monolithic 08 thermal Joule-term kernel (`joule` supplied as its external
+  value) to 1e-12 relative; the kernels are different objects, the values agree. The
+  electrical row's dependence on temperature is the provider-input path in both models
+  (`sigma` is an external property input), so its kernels are identical up to symbol ids and
+  its cross-block tangent is the property-tangent chain, not a Scientia kernel. Test 4: dropping `bind thermal.Q` opens `thermal/input/Q`
   (`SYSTEM_OPEN_INPUT`), re-binding it to case data yields a DAG scheduled thermal → electrical.
   Test 5 (W1 part): duplicate producers, private symbols, kind/support/cross-domain
   mismatches, and domain-parameter errors are typed refusals; port items are SC-W2.
@@ -312,9 +318,9 @@ Verified locally on 2026-09-03 (SC runner-free tree):
 - `cargo fmt --all -- --check`, `cargo clippy --all-targets -- -D warnings`,
   `RUSTDOCFLAGS='-D warnings' cargo doc --no-deps` -- passed.
 - `cargo test` (lib + every integration binary, run per binary with `SINBAD_WORKSPACE` set) --
-  passed: 174 tests, 0 failed (24 lib, 150 integration across 28 binaries including
+  passed: 175 tests, 0 failed (24 lib, 151 integration across 28 binaries including
   `tests/sc_sign_gauge.rs` (5), `tests/sc_slots_inputs.rs` (4),
-  `tests/sv1_a_derivative_request.rs` (5), and `tests/sc_w1_composition.rs` (8)).
+  `tests/sv1_a_derivative_request.rs` (5), and `tests/sc_w1_composition.rs` (9)).
 - `cargo check` of the Sinbad and Finitum checkouts against this working tree passed
   (2026-09-03).
 - Corpus sweep: 50/50 elaborate; 97/128 operator factorizations (see batch P above).
@@ -356,17 +362,17 @@ Verified locally on 2026-09-03 (SC runner-free tree):
   the gauge.
 - Non-Cartesian coordinate systems validate and are then ignored downstream. `si_bootstrap`
   coverage is what the corpus needs, no more.
-- SC-W1 does not execute the composed-vs-monolithic value comparison (SC3a) or land
-  `connector`/`port`/`connect`, region parameters, domain relations, system observables, or
-  `Transferred` chains (SC-W2). There is no `system` CLI subcommand yet.
+- SC-W1 executes SC3a at the kernel level only (Joule chain vs monolithic 08 Joule term at
+  sampled points); solution and observable agreement (SC3b) is Sinbad's once the composed
+  system runs. `connector`/`port`/`connect`, region parameters, domain relations, system
+  observables, and `Transferred` chains are SC-W2. There is no `system` CLI subcommand yet.
 
 ## Next compiler work (W7 lane order)
 
 1. **Done:** batch P (above).
 2. **Done:** runner-free SC packages (above).
 3. **Done:** SV1-A (above).
-4. **Done:** SC-W1 (above). Next: SC3a value agreement of the composed electrothermal
-   kernels with monolithic 08 through the Malleus reference interpreter; SC-W2 (`connector`/
+4. **Done:** SC-W1 (above), including the kernel-level SC3a check. Next: SC-W2 (`connector`/
    `port`/`connect`, region parameters, relations, `Transferred` chains); a `system` CLI
    subcommand; the `/2` sign gauge through opaque constitutive inputs (Stokes).
 

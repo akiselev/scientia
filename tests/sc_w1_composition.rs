@@ -623,3 +623,264 @@ fn sinbad_corpus_models_are_implicit_one_instance_systems() {
     }
     assert!(count >= 50, "{count} corpus models");
 }
+
+/// `sinbad/physics/corpus/08-electrothermal-joule.res` without its comments: the monolithic
+/// reference for SC3a.
+const MONOLITHIC_08: &str = r#"
+module corpus.coupled.electrothermal;
+
+model ElectrothermalJoule {
+    domain Omega { dimension = 2; coordinates = cartesian; }
+
+    field V: unknown scalar H1(order=1) on Omega;
+    field T: state scalar H1(order=1) on Omega {
+        quantity = ThermodynamicTemperature;
+        unit = K;
+        nominal = 300 K;
+        time_role = differential;
+    };
+
+    provider electrical_conductivity(T: ThermodynamicTemperature) -> ElectricalConductivity { differentiability = symbolic; }
+    provider density(T: ThermodynamicTemperature) -> Density { differentiability = symbolic; }
+    provider specific_heat(T: ThermodynamicTemperature) -> SpecificHeat { differentiability = symbolic; }
+    provider thermal_conductivity(T: ThermodynamicTemperature) -> ThermalConductivity { differentiability = symbolic; }
+
+    property sigma = electrical_conductivity(T);
+    property rho = density(T);
+    property cp = specific_heat(T);
+    property k = thermal_conductivity(T);
+
+    constitutive current_density = -sigma * grad(V);
+    source joule = sigma * dot(grad(V), grad(V));
+
+    equation electrical on Omega {
+        div(current_density) = 0;
+    }
+
+    equation thermal on Omega {
+        rho * cp * dt(T) - div(k * grad(T)) = joule;
+    }
+
+    boundary anode on boundary("anode") {
+        dirichlet V = 1;
+    }
+
+    boundary cathode on boundary("cathode") {
+        dirichlet V = 0;
+    }
+
+    initial { T = 300 K; }
+}
+"#;
+
+/// Run one Malleus kernel with `values` for the named operands; every other operand is a
+/// zero buffer. Returns all buffers after execution.
+fn run_kernel(
+    kernel: &malleus::StructuredKernel,
+    values: &BTreeMap<malleus::OperandId, Vec<f64>>,
+) -> Vec<Vec<f64>> {
+    let validated = malleus::validate(kernel.clone()).unwrap();
+    let executable = malleus::Executable::reference(validated);
+    let mut buffers = kernel
+        .operands
+        .iter()
+        .enumerate()
+        .map(|(index, operand)| {
+            values
+                .get(&malleus::OperandId::new(index))
+                .cloned()
+                .unwrap_or_else(|| vec![0.0; operand.shape.iter().product::<usize>().max(1)])
+        })
+        .collect::<Vec<_>>();
+    let mut bindings = buffers
+        .iter_mut()
+        .enumerate()
+        .map(|(index, values)| malleus::BufferBinding::new(malleus::OperandId::new(index), values))
+        .collect::<Vec<_>>();
+    malleus::Interpreter::run(&executable, &mut bindings).unwrap();
+    drop(bindings);
+    buffers
+}
+
+/// Acceptance test 3 (SC3a, kernel level): at sampled states the composed Joule chain (the
+/// `joule_heat` output kernel feeding the thermal residual's `Q` operand through the Malleus
+/// composition) reproduces the monolithic 08 thermal Joule-term kernel to roundoff. The kernels
+/// are different objects; the values agree.
+#[test]
+fn composed_joule_chain_matches_monolithic_08_kernel_at_sampled_states() {
+    // Monolithic: the thermal bundle that reads the defined source `joule`.
+    let mono = compile_semantics(MONOLITHIC_08, &UnitRegistry::si_bootstrap()).unwrap();
+    let mono_model = &mono.semantic.models[0];
+    let joule = mono_model
+        .symbols
+        .iter()
+        .find(|s| s.name == "joule")
+        .unwrap()
+        .id;
+    let mono_system = compile_operator_system(
+        &mono.semantic,
+        "ElectrothermalJoule",
+        &["electrical", "thermal"],
+    )
+    .unwrap();
+    let thermal = mono_system
+        .blocks
+        .iter()
+        .find(|b| b.equation == "thermal")
+        .unwrap();
+    let (mono_bundle, mono_program) = thermal
+        .kernels
+        .bundles
+        .iter()
+        .find_map(|bundle| {
+            let program = &thermal.factorization.integrals[bundle.integral_index].primal;
+            program
+                .inputs
+                .iter()
+                .any(|input| input.binding.symbol == joule)
+                .then_some((bundle, program))
+        })
+        .expect("the thermal row has a Joule-term bundle");
+    let mono_joule_operands = mono_bundle
+        .primal_inputs
+        .iter()
+        .filter(|binding| {
+            mono_program
+                .inputs
+                .iter()
+                .any(|input| input.id == binding.input && input.binding.symbol == joule)
+        })
+        .map(|binding| binding.operand)
+        .collect::<Vec<_>>();
+    assert!(!mono_joule_operands.is_empty());
+    assert_eq!(
+        mono_bundle.primal_inputs.len(),
+        mono_joule_operands.len(),
+        "the Joule term reads only `joule`"
+    );
+
+    // Composed: the composition realizing `bind thermal.Q <- electrical.joule_heat`.
+    let compilation = system_of(ELECTROTHERMAL, "Electrothermal").unwrap();
+    let operator = compile_system_operator(&compilation).unwrap();
+    let bind_index = compilation
+        .system
+        .binds
+        .iter()
+        .position(|bind| bind.consumer_slot == "thermal/input/Q")
+        .unwrap();
+    let [composition] = operator
+        .compositions
+        .iter()
+        .filter(|composition| composition.bind == bind_index)
+        .collect::<Vec<_>>()[..]
+    else {
+        panic!("one consumer bundle reads Q");
+    };
+    let output = &compilation.system.outputs[compilation.system.binds[bind_index].producer.index()];
+    let producer_kernels = &operator.output_kernels[output.id.index()];
+    let producer_bundle = &producer_kernels.kernels.bundles[0];
+    let producer_program = &producer_kernels.factorization.integrals[0].primal;
+    let electrical = compilation.model(output.instance);
+    let sigma = electrical
+        .symbols
+        .iter()
+        .find(|s| s.name == "sigma")
+        .unwrap()
+        .id;
+    let v = electrical
+        .symbols
+        .iter()
+        .find(|s| s.name == "V")
+        .unwrap()
+        .id;
+    let operands_for = |symbol: scientia::SymbolId| {
+        producer_bundle
+            .primal_inputs
+            .iter()
+            .filter(|binding| {
+                producer_program
+                    .inputs
+                    .iter()
+                    .any(|input| input.id == binding.input && input.binding.symbol == symbol)
+            })
+            .map(|binding| binding.operand)
+            .collect::<Vec<_>>()
+    };
+    let sigma_operands = operands_for(sigma);
+    let grad_v_operands = operands_for(v);
+    assert!(!sigma_operands.is_empty() && !grad_v_operands.is_empty());
+    let shared = composition
+        .consumer_operands
+        .iter()
+        .copied()
+        .chain(std::iter::once(composition.producer_operand))
+        .collect::<BTreeSet<_>>();
+    let validated = malleus::validate_composition(composition.composition.clone()).unwrap();
+    let executable = malleus::ExecutableComposition::reference(validated);
+
+    let states: [(f64, [f64; 2]); 3] = [(2.0, [0.3, -1.1]), (0.7, [1.5, 2.25]), (1.0, [0.0, 3.0])];
+    for (s, g) in states {
+        let joule_value = s * (g[0] * g[0] + g[1] * g[1]);
+
+        // Monolithic kernel with `joule` supplied as the external value it is.
+        let values = mono_joule_operands
+            .iter()
+            .map(|operand| (*operand, vec![joule_value]))
+            .collect::<BTreeMap<_, _>>();
+        let buffers = run_kernel(
+            &mono_bundle.module.kernels[mono_bundle.primal_kernel_index],
+            &values,
+        );
+        let expected = buffers[mono_bundle.primal_output.index()].clone();
+
+        // Composed chain: sigma and grad V into stage 0; every non-shared operand bound once.
+        let mut buffers: Vec<(malleus::StageOperand, Vec<f64>)> = Vec::new();
+        for (stage_index, stage) in composition.composition.stages.iter().enumerate() {
+            for (index, operand) in stage.operands.iter().enumerate() {
+                let target =
+                    malleus::StageOperand::new(stage_index, malleus::OperandId::new(index));
+                if shared.contains(&target) {
+                    continue;
+                }
+                let mut value = vec![0.0; operand.shape.iter().product::<usize>().max(1)];
+                if stage_index == 0 && sigma_operands.contains(&target.operand) {
+                    value = vec![s];
+                } else if stage_index == 0 && grad_v_operands.contains(&target.operand) {
+                    value = g.to_vec();
+                }
+                buffers.push((target, value));
+            }
+        }
+        let mut bindings = buffers
+            .iter_mut()
+            .map(|(target, values)| malleus::CompositionBinding::operand(*target, values))
+            .collect::<Vec<_>>();
+        malleus::Interpreter::run_composition(&executable, &mut bindings).unwrap();
+        drop(bindings);
+        let consumer_output = malleus::StageOperand::new(
+            1,
+            composition.composition.stages[1]
+                .operands
+                .iter()
+                .position(|operand| operand.access == malleus::AccessMode::Write)
+                .map(malleus::OperandId::new)
+                .unwrap(),
+        );
+        let actual = buffers
+            .iter()
+            .find(|(target, _)| *target == consumer_output)
+            .map(|(_, values)| values.clone())
+            .unwrap();
+        assert_eq!(actual.len(), expected.len());
+        for (a, e) in actual.iter().zip(&expected) {
+            assert!(
+                (a - e).abs() <= 1e-12 * e.abs().max(1.0),
+                "{a} vs {e} at s={s} g={g:?}"
+            );
+        }
+        assert!(
+            (expected[0].abs() - joule_value).abs() <= 1e-12 * joule_value.max(1.0),
+            "the Joule term dual is ±joule: {expected:?} vs {joule_value}"
+        );
+    }
+}
