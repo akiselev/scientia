@@ -29,6 +29,10 @@ pub struct ScientificModel {
     pub parameters: Vec<ValueDecl>,
     pub constants: Vec<ValueDecl>,
     pub sources: Vec<ValueDecl>,
+    /// `input field` / `input value` declarations (SC, `sinbad/ARCHITECTURE.md` §3.3). Skipped
+    /// from the digest projection when empty so every pre-SC module keeps its digest.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub inputs: Vec<InputDecl>,
     pub providers: Vec<ProviderDecl>,
     pub properties: Vec<PropertyBinding>,
     pub constitutive_laws: Vec<ConstitutiveBinding>,
@@ -136,6 +140,30 @@ pub struct ValueDecl {
     pub unit_span: Option<SourceSpan>,
     pub value: Option<Expr>,
     pub span: SourceSpan,
+}
+
+/// `input field NAME: Kind on Domain;` or `input value NAME: Kind;` (SC §3.3): a binding slot
+/// a system `bind` or a case closes. An input field is externally supplied field data on one
+/// domain; an input value is one spatially constant datum. Neither carries a definition.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct InputDecl {
+    pub name: String,
+    pub kind: InputDeclKind,
+    pub quantity_kind: Option<QuantityKindId>,
+    pub quantity_kind_span: Option<SourceSpan>,
+    pub unit: Option<UnitId>,
+    pub unit_span: Option<SourceSpan>,
+    /// Present exactly for `InputDeclKind::Field`.
+    pub domain: Option<String>,
+    pub domain_span: Option<SourceSpan>,
+    pub span: SourceSpan,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InputDeclKind {
+    Field,
+    Value,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -610,6 +638,22 @@ impl Parser {
     fn ident_is(&self, s: &str) -> bool {
         matches!(&self.token().kind, TokenKind::Ident(x) if x == s)
     }
+    /// The identifier after the current token, if any (one-token lookahead for soft keywords).
+    fn peek_ident(&self) -> Option<&str> {
+        match self.tokens.get(self.i + 1).map(|token| &token.kind) {
+            Some(TokenKind::Ident(x)) => Some(x.as_str()),
+            _ => None,
+        }
+    }
+    fn expect_ident(&mut self, s: &str) {
+        if !self.eat_ident(s) {
+            let span = self.token().span;
+            self.errors.push(ScientificError::Syntax {
+                message: format!("expected `{s}`"),
+                span,
+            });
+        }
+    }
     fn eat_ident(&mut self, s: &str) -> bool {
         if self.ident_is(s) {
             self.bump();
@@ -725,6 +769,7 @@ impl Parser {
             parameters: vec![],
             constants: vec![],
             sources: vec![],
+            inputs: vec![],
             providers: vec![],
             properties: vec![],
             constitutive_laws: vec![],
@@ -758,6 +803,15 @@ impl Parser {
             } else if self.eat_ident("source") {
                 if let Some(x) = self.value_decl() {
                     model.sources.push(x);
+                }
+            } else if self.ident_is("input") && matches!(self.peek_ident(), Some("field" | "value"))
+            {
+                // Soft keyword (§3.2): `input` opens a declaration only when followed by
+                // `field` or `value`, so a provider parameter or symbol named `input` still
+                // parses.
+                self.bump();
+                if let Some(x) = self.input_decl() {
+                    model.inputs.push(x);
                 }
             } else if self.eat_ident("provider") {
                 if let Some(x) = self.provider() {
@@ -1037,6 +1091,80 @@ impl Parser {
             value,
             unit: UnitId::new(unit),
             kind: kind.unwrap_or_else(|| QuantityKindId::new("scientia:Unspecified")),
+        })
+    }
+
+    fn input_decl(&mut self) -> Option<InputDecl> {
+        let kind = if self.eat_ident("field") {
+            InputDeclKind::Field
+        } else {
+            self.expect_ident("value");
+            InputDeclKind::Value
+        };
+        let (name, span) = self.expect_ident_value()?;
+        let mut quantity_kind = None;
+        let mut quantity_kind_span = None;
+        let mut unit = None;
+        let mut unit_span = None;
+        if self.eat_punct(':')
+            && let Some((kind_name, kind_span)) = self.expect_ident_value()
+        {
+            quantity_kind = Some(QuantityKindId::new(kind_name));
+            quantity_kind_span = Some(kind_span);
+        }
+        if self.eat_punct('[') {
+            if let Some((unit_name, span)) = self.expect_ident_value() {
+                unit = Some(UnitId::new(unit_name));
+                unit_span = Some(span);
+            }
+            self.expect_punct(']');
+        }
+        let mut domain = None;
+        let mut domain_span = None;
+        match kind {
+            InputDeclKind::Field => {
+                if self.eat_ident("on") {
+                    if let Some((domain_name, span)) = self.expect_ident_value() {
+                        domain = Some(domain_name);
+                        domain_span = Some(span);
+                    }
+                } else {
+                    self.errors.push(ScientificError::Syntax {
+                        message: format!("input field `{name}` must declare `on <domain>`"),
+                        span,
+                    });
+                }
+            }
+            InputDeclKind::Value => {
+                if self.ident_is("on") {
+                    self.errors.push(ScientificError::Syntax {
+                        message: format!("input value `{name}` has no domain; use `input field`"),
+                        span,
+                    });
+                }
+            }
+        }
+        if self.eat_op("=") {
+            let value = self.expr(0)?;
+            self.errors.push(ScientificError::Syntax {
+                message: format!(
+                    "input `{name}` cannot carry a definition; declare a `source`, `parameter`, \
+                     or `property` instead"
+                ),
+                span: value.span(),
+            });
+        }
+        self.expect_punct(';');
+        Some(InputDecl {
+            name,
+            kind,
+            quantity_kind,
+            quantity_kind_span,
+            unit,
+            unit_span,
+            domain,
+            domain_span,
+            span,
         })
     }
 
@@ -1870,6 +1998,31 @@ pub fn format_scientific_module(module: &ScientificModule) -> String {
         for s in &model.sources {
             out.push_str(&format_value_decl("source", s));
         }
+        for input in &model.inputs {
+            let ty = input
+                .quantity_kind
+                .as_ref()
+                .map(|x| format!(": {}", x.as_str()))
+                .unwrap_or_default();
+            let unit = input
+                .unit
+                .as_ref()
+                .map(|x| format!(" [{}]", x.as_str()))
+                .unwrap_or_default();
+            let domain = input
+                .domain
+                .as_ref()
+                .map(|x| format!(" on {x}"))
+                .unwrap_or_default();
+            let kind = match input.kind {
+                InputDeclKind::Field => "field",
+                InputDeclKind::Value => "value",
+            };
+            out.push_str(&format!(
+                "    input {kind} {}{ty}{unit}{domain};\n",
+                input.name
+            ));
+        }
         for p in &model.providers {
             out.push_str(&format!(
                 "    provider {}({}) -> {}",
@@ -2211,6 +2364,29 @@ impl ModuleSource for FilesystemModuleSource {
 pub struct ResolvedModules {
     pub modules: BTreeMap<String, ScientificModule>,
     pub semantic_digest: String,
+    /// Per-module [`ModuleDigest`]s (SC §2.1), keyed like `modules`; the identity half of every
+    /// [`crate::SourceLocator`] and `GlobalDeclId` that points into this closure.
+    #[serde(default)]
+    pub module_digests: BTreeMap<String, ModuleDigest>,
+}
+
+/// `blake3` of a module's span-stripped parse (`sinbad/ARCHITECTURE.md` §2.1): the same value
+/// as [`semantic_digest`], carried as a type so declaration identities and source locators
+/// cannot be confused with artifact [`crate::Digest`]s.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct ModuleDigest(pub String);
+
+impl ModuleDigest {
+    pub fn of(module: &ScientificModule) -> Self {
+        Self(semantic_digest(module))
+    }
+}
+
+impl std::fmt::Display for ModuleDigest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
 }
 
 pub fn resolve_modules(
@@ -2267,9 +2443,14 @@ pub fn resolve_modules(
         .collect::<BTreeMap<_, _>>();
     let bytes = serde_json::to_vec(&semantic_projection).unwrap();
     let digest = blake3::hash(&bytes).to_hex().to_string();
+    let module_digests = semantic_projection
+        .into_iter()
+        .map(|(name, digest)| (name.clone(), ModuleDigest(digest)))
+        .collect();
     Ok(ResolvedModules {
         modules,
         semantic_digest: digest,
+        module_digests,
     })
 }
 

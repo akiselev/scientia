@@ -89,13 +89,13 @@ pub use requirements::{
     SpaceSystemRequirement, TraceMapping, TraceRequirement, infer_form_requirements,
 };
 pub use scientific::{
-    CouplingGraph, DerivativeContract, Expr, FilesystemModuleSource, ModuleSource, NoImports,
-    PropertyBranch, PropertyDefinition, PropertyDomain, PropertyEvidence, PropertyInput,
-    PropertyLocality, PropertyModel, PropertyOutput, PropertyProviderRef, PropertySignature,
-    PropertyTable, ProviderDecl, ProviderDomainBound, ProviderInputDecl, ResolvedModules,
-    ScientificError, ScientificModel, ScientificModule, TableDerivativePolicy, TimeRole,
-    TimeStateSemantics, canonicalize_authored_quantity, derive_coupling_graph,
-    format_scientific_module, parse_expression, parse_scientific_module,
+    CouplingGraph, DerivativeContract, Expr, FilesystemModuleSource, InputDecl, InputDeclKind,
+    ModuleDigest, ModuleSource, NoImports, PropertyBranch, PropertyDefinition, PropertyDomain,
+    PropertyEvidence, PropertyInput, PropertyLocality, PropertyModel, PropertyOutput,
+    PropertyProviderRef, PropertySignature, PropertyTable, ProviderDecl, ProviderDomainBound,
+    ProviderInputDecl, ResolvedModules, ScientificError, ScientificModel, ScientificModule,
+    TableDerivativePolicy, TimeRole, TimeStateSemantics, canonicalize_authored_quantity,
+    derive_coupling_graph, format_scientific_module, parse_expression, parse_scientific_module,
     parse_scientific_module_diagnostics, resolve_modules, semantic_digest, validate_quantities,
 };
 pub use semantic::{
@@ -107,7 +107,9 @@ pub use semantic::{
     SemanticType, SymbolId, TraceSide, compile_semantics, compile_semantics_with, elaborate_module,
     elaborate_module_with, semantic_arena_digest,
 };
-pub use source::{RelatedSpan, SourceDiagnostic, SourceSeverity, SourceSpan, Spanned};
+pub use source::{
+    RelatedSpan, SourceDiagnostic, SourceLocator, SourceSeverity, SourceSpan, Spanned,
+};
 pub use structural::scc::{Digraph, GraphError, Sccs, tarjan_scc};
 pub use structural::{
     AliasAnalysis, AliasClass, Block, BlockKind, DerivativeVariable, DifferentiationStep,
@@ -118,8 +120,9 @@ pub use structural::{
 pub use structure::{
     BlockClass, BlockStructure, FormSymmetry, Linearity, NullspaceCandidate, NullspaceKind,
     OPERATOR_STRUCTURE_SCHEMA, OperatorStructure, PropertyDependence,
-    PropertyTangent as StructurePropertyTangent, StructureError, TimeStructure,
-    derive_operator_structure, derive_operator_structure_for_system,
+    PropertyTangent as StructurePropertyTangent, SignGauge, SignedEdge, SignedGraphBalance,
+    StructureError, TimeStructure, TransposeRelation, derive_operator_structure,
+    derive_operator_structure_for_system,
 };
 pub use structured::{
     STRUCTURED_KERNEL_BUNDLE_SCHEMA, StructuredDerivativeContract, StructuredDerivativeEvidence,

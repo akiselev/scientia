@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
+)]
 pub struct SourceSpan {
     pub start: usize,
     pub end: usize,
@@ -10,6 +12,15 @@ impl SourceSpan {
     pub fn new(start: usize, end: usize) -> Self {
         Self { start, end }
     }
+}
+
+/// Where a declaration or expression lives across a module closure (`sinbad/ARCHITECTURE.md`
+/// §2.1): the module's digest identity plus the byte span inside that module's source. Spans
+/// alone are meaningless outside one module; a locator is what an origin map records.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct SourceLocator {
+    pub module: crate::scientific::ModuleDigest,
+    pub span: SourceSpan,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

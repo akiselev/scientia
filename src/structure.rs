@@ -12,14 +12,17 @@ use crate::semantic::{ExprId, SemanticExpr, SemanticExprKind, SemanticProvider, 
 use crate::structural::IndexReductionPlan;
 use crate::system::OperatorSystem;
 use crate::tensor::{
-    OperatorFactorization, TensorBinaryOp, TensorInputId, TensorProgramInputRole, TensorScalarExpr,
-    TensorUnaryOp, collect_direct_symbols,
+    OperatorFactorization, TensorAxis, TensorAxisId, TensorBinaryOp, TensorInputId,
+    TensorProgramInputRole, TensorScalarExpr, TensorUnaryOp, collect_direct_symbols,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use thiserror::Error;
 
-pub const OPERATOR_STRUCTURE_SCHEMA: &str = "scientia-operator-structure/1";
+/// `/2` (SC, `sinbad/ARCHITECTURE.md` §7, contract C12): additive `block_symmetry`,
+/// `transpose_relation`, and `sign_gauge` over the `/1` (C5.4) fields. Keys are the per-model
+/// row `SymbolId`s of `blocks` until SC-W1's system-level `SysResId` re-keys them.
+pub const OPERATOR_STRUCTURE_SCHEMA: &str = "scientia-operator-structure/2";
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "spec", rename_all = "snake_case")]
@@ -94,18 +97,72 @@ pub struct TimeStructure {
     pub dae_index_lower_bound: Option<u8>,
 }
 
+/// `A_ij ≈ σ_ij · A_jiᵀ` decided structurally (§7): the two off-diagonal kernels are compared
+/// after exchanging test/active roles, relabeling shared coefficient inputs by binding, and
+/// splitting an overall sign; `None` when the relation is undecidable (kernels with several
+/// integrals, non-matching evaluations, or structure beyond sign-normalized equivalence).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct TransposeRelation {
+    pub row: SymbolId,
+    pub column: SymbolId,
+    pub sigma: Option<i8>,
+}
+
+/// One signed edge of the row graph: `sigma` is the transpose relation between the two rows'
+/// off-diagonal blocks.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct SignedEdge {
+    pub row: SymbolId,
+    pub column: SymbolId,
+    pub sigma: i8,
+}
+
+/// Proof that the signed row graph is balanced: signs were propagated from each component's
+/// smallest row (`+1`) along `spanning_forest`, and every edge in `edges` then satisfies
+/// `sign[row] · sign[column] == sigma`, so multiplying each row by its sign makes every
+/// off-diagonal pair an exact transpose pair. Structure proposes; Finitum's `prove_symmetry`
+/// remains the runtime gate.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SignedGraphBalance {
+    pub edges: Vec<SignedEdge>,
+    pub spanning_forest: Vec<SignedEdge>,
+}
+
+/// The compiler-owned residual gauge (§7): a `±1` row orientation per block row under which the
+/// whole system is structurally symmetric. Replaces case-data `[system].equation_sign`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SignGauge {
+    /// Sorted by row.
+    pub signs: Vec<(SymbolId, i8)>,
+    pub proof: SignedGraphBalance,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct OperatorStructure {
     pub schema: String,
     pub model: String,
     pub source_digest: Digest,
     pub trial_linearity: Linearity,
+    /// The unsigned authored form/system's symmetry (C5.4): decided for a single linear block,
+    /// `Unknown` for every multi-block system (see `sign_gauge` for the gauged claim).
     pub form_symmetry: FormSymmetry,
     pub blocks: Vec<BlockStructure>,
     pub saddle_point: bool,
     pub nullspace_candidates: Vec<NullspaceCandidate>,
     pub property_dependence: Vec<PropertyDependence>,
     pub time: TimeStructure,
+    /// `/2`: symmetry of each *present* diagonal block, keyed by row, sorted; decided by the
+    /// evaluation-paired test/active exchange of every integral linear in its active inputs.
+    pub block_symmetry: Vec<(SymbolId, FormSymmetry)>,
+    /// `/2`: one entry per ordered off-diagonal pair `(row, column)` whose block and whose
+    /// mirror block are both present; sorted.
+    pub transpose_relation: Vec<TransposeRelation>,
+    /// `/2`: present iff every present diagonal block is `Symmetric`, no diagonal block is
+    /// `Convective`, every present off-diagonal pair is two-sided with a decided `sigma`, and
+    /// the signed row graph is balanced.
+    pub sign_gauge: Option<SignGauge>,
+    /// `/2`: exactly when `sign_gauge` is `None`, why (the first failing condition).
+    pub sign_gauge_reason: Option<String>,
     pub identity: Digest,
 }
 
@@ -135,6 +192,10 @@ struct StructureIdentity<'a> {
     nullspace_candidates: &'a [NullspaceCandidate],
     property_dependence: &'a [PropertyDependence],
     time: &'a TimeStructure,
+    block_symmetry: &'a [(SymbolId, FormSymmetry)],
+    transpose_relation: &'a [TransposeRelation],
+    sign_gauge: &'a Option<SignGauge>,
+    sign_gauge_reason: &'a Option<String>,
 }
 
 struct BlockView<'a> {
@@ -720,6 +781,559 @@ fn classify_symmetry(block: &BlockView) -> FormSymmetry {
     }
 }
 
+/// Relabel every `Input` id through `map` (ids absent from `map` are kept).
+fn relabel_inputs(
+    expr: &TensorScalarExpr,
+    map: &BTreeMap<TensorInputId, TensorInputId>,
+) -> TensorScalarExpr {
+    match expr {
+        TensorScalarExpr::Constant { value } => TensorScalarExpr::Constant { value: *value },
+        TensorScalarExpr::Input { input, indices } => TensorScalarExpr::Input {
+            input: map.get(input).copied().unwrap_or(*input),
+            indices: indices.clone(),
+        },
+        TensorScalarExpr::Unary { op, arg } => TensorScalarExpr::Unary {
+            op: *op,
+            arg: Box::new(relabel_inputs(arg, map)),
+        },
+        TensorScalarExpr::Binary { op, lhs, rhs } => TensorScalarExpr::Binary {
+            op: *op,
+            lhs: Box::new(relabel_inputs(lhs, map)),
+            rhs: Box::new(relabel_inputs(rhs, map)),
+        },
+        TensorScalarExpr::IndexEqual { lhs, rhs } => TensorScalarExpr::IndexEqual {
+            lhs: *lhs,
+            rhs: *rhs,
+        },
+        TensorScalarExpr::Reduction {
+            op,
+            axis,
+            expression,
+        } => TensorScalarExpr::Reduction {
+            op: *op,
+            axis: *axis,
+            expression: Box::new(relabel_inputs(expression, map)),
+        },
+    }
+}
+
+/// Relabel tensor axes by first appearance in a pre-order walk, so two programs that allocated
+/// axis ids in different orders compare equal when their index structure agrees.
+fn relabel_axes(
+    expr: &TensorScalarExpr,
+    map: &mut BTreeMap<TensorAxisId, TensorAxisId>,
+) -> TensorScalarExpr {
+    let canonical = |axis: TensorAxisId, map: &mut BTreeMap<TensorAxisId, TensorAxisId>| {
+        let next = TensorAxisId(map.len() as u32);
+        *map.entry(axis).or_insert(next)
+    };
+    match expr {
+        TensorScalarExpr::Constant { value } => TensorScalarExpr::Constant { value: *value },
+        TensorScalarExpr::Input { input, indices } => TensorScalarExpr::Input {
+            input: *input,
+            indices: indices.iter().map(|axis| canonical(*axis, map)).collect(),
+        },
+        TensorScalarExpr::Unary { op, arg } => TensorScalarExpr::Unary {
+            op: *op,
+            arg: Box::new(relabel_axes(arg, map)),
+        },
+        TensorScalarExpr::Binary { op, lhs, rhs } => {
+            let lhs = relabel_axes(lhs, map);
+            let rhs = relabel_axes(rhs, map);
+            TensorScalarExpr::Binary {
+                op: *op,
+                lhs: Box::new(lhs),
+                rhs: Box::new(rhs),
+            }
+        }
+        TensorScalarExpr::IndexEqual { lhs, rhs } => {
+            let lhs = canonical(*lhs, map);
+            let rhs = canonical(*rhs, map);
+            TensorScalarExpr::IndexEqual { lhs, rhs }
+        }
+        TensorScalarExpr::Reduction {
+            op,
+            axis,
+            expression,
+        } => {
+            let id = canonical(axis.id, map);
+            TensorScalarExpr::Reduction {
+                op: *op,
+                axis: TensorAxis { id, ..*axis },
+                expression: Box::new(relabel_axes(expression, map)),
+            }
+        }
+    }
+}
+
+/// Split an overall `±1` factor off a product/negation tree: `-(a*b)`, `(-a)*b`, `a*(-2*b)`
+/// all yield `-1` and a sign-free core. Sums are left alone (a sign inside a `Sub` is not an
+/// overall sign), so an undetected relation stays `None` rather than being guessed.
+fn split_sign(expr: &TensorScalarExpr) -> (i8, TensorScalarExpr) {
+    match expr {
+        TensorScalarExpr::Constant { value } if *value < 0.0 => {
+            (-1, TensorScalarExpr::Constant { value: -value })
+        }
+        TensorScalarExpr::Unary {
+            op: TensorUnaryOp::Neg,
+            arg,
+        } => {
+            let (sign, core) = split_sign(arg);
+            (-sign, core)
+        }
+        TensorScalarExpr::Binary {
+            op: op @ (TensorBinaryOp::Mul | TensorBinaryOp::Div),
+            lhs,
+            rhs,
+        } => {
+            let (left, lhs) = split_sign(lhs);
+            let (right, rhs) = split_sign(rhs);
+            (
+                left * right,
+                TensorScalarExpr::Binary {
+                    op: *op,
+                    lhs: Box::new(lhs),
+                    rhs: Box::new(rhs),
+                },
+            )
+        }
+        TensorScalarExpr::Reduction {
+            op,
+            axis,
+            expression,
+        } => {
+            let (sign, core) = split_sign(expression);
+            (
+                sign,
+                TensorScalarExpr::Reduction {
+                    op: *op,
+                    axis: *axis,
+                    expression: Box::new(core),
+                },
+            )
+        }
+        other => (1, other.clone()),
+    }
+}
+
+/// Binding identity of a coefficient input, independent of program-local ids.
+type CoefficientKey = (
+    SymbolId,
+    crate::requirements::BasisEvaluationRequirement,
+    Vec<usize>,
+);
+
+fn coefficient_key(input: &crate::tensor::TensorProgramInput) -> CoefficientKey {
+    (
+        input.binding.symbol,
+        input.binding.evaluation.clone(),
+        input.shape.clone(),
+    )
+}
+
+const CANONICAL_TEST: TensorInputId = TensorInputId(0);
+const CANONICAL_ACTIVE: TensorInputId = TensorInputId(1);
+
+/// Canonical form of an integrand for cross-program comparison: the (single) test input becomes
+/// `test_key`, the (single) active input `active_key`, every other input its rank in
+/// `coefficients`, and axes are renumbered by first appearance.
+fn canonical_integrand(
+    program: &crate::tensor::TensorProgram,
+    test: TensorInputId,
+    active: TensorInputId,
+    test_key: TensorInputId,
+    active_key: TensorInputId,
+    coefficients: &BTreeMap<CoefficientKey, TensorInputId>,
+) -> TensorScalarExpr {
+    let mut map = BTreeMap::new();
+    map.insert(test, test_key);
+    map.insert(active, active_key);
+    for input in &program.inputs {
+        if input.id != test
+            && input.id != active
+            && let Some(key) = coefficients.get(&coefficient_key(input))
+        {
+            map.insert(input.id, *key);
+        }
+    }
+    let relabeled = relabel_inputs(&program.output.expression, &map);
+    relabel_axes(&relabeled, &mut BTreeMap::new())
+}
+
+/// The integrals of `block` whose active inputs all belong to `column`, skipping pure source
+/// terms (no active input). `None` when some integral mixes `column` with another active
+/// symbol, which no single block coordinate describes.
+fn block_integrals<'a>(
+    block: &'a BlockView<'a>,
+    column: SymbolId,
+) -> Option<Vec<&'a crate::tensor::IntegralOperatorFactorization>> {
+    let mut selected = Vec::new();
+    for integral in &block.factorization.integrals {
+        let active = integral
+            .tensor_program
+            .inputs
+            .iter()
+            .filter(|input| input.role == TensorProgramInputRole::Active)
+            .map(|input| input.binding.symbol)
+            .collect::<BTreeSet<_>>();
+        if active.is_empty() {
+            continue;
+        }
+        if active.len() > 1 {
+            return None;
+        }
+        if active.contains(&column) {
+            selected.push(integral);
+        }
+    }
+    Some(selected)
+}
+
+/// Does the integrand of `integral` depend only affinely on its active inputs (and on the
+/// properties `properties` says are not frozen)? Symmetry claims are made about bilinear forms
+/// only; a nonlinear diagonal block is `Unknown`.
+fn integral_is_linear(
+    integral: &crate::tensor::IntegralOperatorFactorization,
+    properties: &BTreeMap<SymbolId, PropertyDependence>,
+) -> bool {
+    let mut active_ids = integral
+        .tensor_program
+        .inputs
+        .iter()
+        .filter(|input| input.role == TensorProgramInputRole::Active)
+        .map(|input| input.id)
+        .collect::<BTreeSet<_>>();
+    for input in &integral.tensor_program.inputs {
+        if matches!(
+            input.source,
+            InputSourceRequirement::ModelDefinedProperty { .. }
+        ) && properties
+            .get(&input.binding.symbol)
+            .is_some_and(|dependence| dependence.tangent != PropertyTangent::Frozen)
+        {
+            active_ids.insert(input.id);
+        }
+    }
+    let mut offending = BTreeSet::new();
+    degree_of(
+        &integral.tensor_program.output.expression,
+        &active_ids,
+        &mut offending,
+    ) != Degree::Unknown
+}
+
+/// Symmetry of one diagonal block by evaluation-paired test/active exchange: every test input
+/// is swapped with the active input carrying the same evaluation and shape (so
+/// `u v + k grad u · grad v` pairs `(v, u)` and `(grad v, grad u)` at once); an unpaired input
+/// makes the block `Unknown` rather than guessed.
+fn classify_diagonal_symmetry(
+    block: &BlockView,
+    properties: &BTreeMap<SymbolId, PropertyDependence>,
+) -> FormSymmetry {
+    let Some(integrals) = block_integrals(block, block.row) else {
+        return FormSymmetry::Unknown;
+    };
+    if integrals.is_empty() {
+        return FormSymmetry::Unknown;
+    }
+    let mut symmetric = true;
+    for integral in integrals {
+        if !integral_is_linear(integral, properties) {
+            return FormSymmetry::Unknown;
+        }
+        let program = &integral.tensor_program;
+        let tests = program
+            .inputs
+            .iter()
+            .filter(|input| input.role == TensorProgramInputRole::Test)
+            .collect::<Vec<_>>();
+        let actives = program
+            .inputs
+            .iter()
+            .filter(|input| input.role == TensorProgramInputRole::Active)
+            .collect::<Vec<_>>();
+        if tests.len() != actives.len() {
+            return FormSymmetry::Unknown;
+        }
+        let mut map = BTreeMap::new();
+        for test in &tests {
+            let Some(partner) = actives.iter().find(|active| {
+                active.binding.evaluation == test.binding.evaluation
+                    && active.shape == test.shape
+                    && !map.contains_key(&active.id)
+            }) else {
+                return FormSymmetry::Unknown;
+            };
+            map.insert(test.id, partner.id);
+            map.insert(partner.id, test.id);
+        }
+        let swapped = relabel_inputs(&program.output.expression, &map);
+        if !expr_equivalent(&program.output.expression, &swapped) {
+            symmetric = false;
+        }
+    }
+    if symmetric {
+        FormSymmetry::Symmetric
+    } else {
+        FormSymmetry::Nonsymmetric
+    }
+}
+
+fn derive_block_symmetry(
+    blocks: &[BlockView],
+    properties: &BTreeMap<SymbolId, PropertyDependence>,
+) -> Vec<(SymbolId, FormSymmetry)> {
+    let mut result = BTreeMap::new();
+    for block in blocks {
+        let has_diagonal = block.factorization.integrals.iter().any(|integral| {
+            integral.tensor_program.inputs.iter().any(|input| {
+                input.role == TensorProgramInputRole::Active && input.binding.symbol == block.row
+            })
+        });
+        if !has_diagonal {
+            continue;
+        }
+        let symmetry = classify_diagonal_symmetry(block, properties);
+        let entry = result.entry(block.row).or_insert(symmetry);
+        if *entry != symmetry {
+            *entry = FormSymmetry::Unknown;
+        }
+    }
+    result.into_iter().collect()
+}
+
+/// `σ` with `A_ij ≈ σ A_jiᵀ` for one ordered pair, or `None` when undecidable.
+fn transpose_sigma(row_block: &BlockView, column_block: &BlockView) -> Option<i8> {
+    let (i, j) = (row_block.row, column_block.row);
+    let a_ij = block_integrals(row_block, j)?;
+    let a_ji = block_integrals(column_block, i)?;
+    let ([ij], [ji]) = (a_ij.as_slice(), a_ji.as_slice()) else {
+        return None;
+    };
+    let single = |program: &crate::tensor::TensorProgram| {
+        let tests = program
+            .inputs
+            .iter()
+            .filter(|input| input.role == TensorProgramInputRole::Test)
+            .collect::<Vec<_>>();
+        let actives = program
+            .inputs
+            .iter()
+            .filter(|input| input.role == TensorProgramInputRole::Active)
+            .collect::<Vec<_>>();
+        match (tests.as_slice(), actives.as_slice()) {
+            ([test], [active]) => Some(((*test).clone(), (*active).clone())),
+            _ => None,
+        }
+    };
+    let (test_ij, active_ij) = single(&ij.tensor_program)?;
+    let (test_ji, active_ji) = single(&ji.tensor_program)?;
+    // The transpose pairs A_ij's test with A_ji's active (both row-`i` evaluations) and
+    // A_ij's active with A_ji's test (both row-`j` evaluations).
+    if test_ij.binding.evaluation != active_ji.binding.evaluation
+        || test_ij.shape != active_ji.shape
+        || active_ij.binding.evaluation != test_ji.binding.evaluation
+        || active_ij.shape != test_ji.shape
+    {
+        return None;
+    }
+    let mut coefficients = BTreeMap::new();
+    for program in [&ij.tensor_program, &ji.tensor_program] {
+        for input in &program.inputs {
+            if !matches!(
+                input.role,
+                TensorProgramInputRole::Test | TensorProgramInputRole::Active
+            ) {
+                coefficients.entry(coefficient_key(input)).or_insert(());
+            }
+        }
+    }
+    let coefficients = coefficients
+        .into_keys()
+        .enumerate()
+        .map(|(rank, key)| (key, TensorInputId(2 + rank as u32)))
+        .collect::<BTreeMap<_, _>>();
+    let (sign_ij, core_ij) = split_sign(&canonical_integrand(
+        &ij.tensor_program,
+        test_ij.id,
+        active_ij.id,
+        CANONICAL_TEST,
+        CANONICAL_ACTIVE,
+        &coefficients,
+    ));
+    let (sign_ji, core_ji) = split_sign(&canonical_integrand(
+        &ji.tensor_program,
+        test_ji.id,
+        active_ji.id,
+        CANONICAL_ACTIVE,
+        CANONICAL_TEST,
+        &coefficients,
+    ));
+    expr_equivalent(&core_ij, &core_ji).then_some(sign_ij * sign_ji)
+}
+
+fn derive_transpose_relations(
+    blocks: &[BlockView],
+    structure: &[BlockStructure],
+) -> Vec<TransposeRelation> {
+    let present = structure
+        .iter()
+        .filter(|block| block.present)
+        .map(|block| (block.row, block.column))
+        .collect::<BTreeSet<_>>();
+    let mut result = Vec::new();
+    for (row, column) in &present {
+        if row == column || !present.contains(&(*column, *row)) {
+            continue;
+        }
+        let row_blocks = blocks
+            .iter()
+            .filter(|block| block.row == *row)
+            .collect::<Vec<_>>();
+        let column_blocks = blocks
+            .iter()
+            .filter(|block| block.row == *column)
+            .collect::<Vec<_>>();
+        let sigma = match (row_blocks.as_slice(), column_blocks.as_slice()) {
+            ([row_block], [column_block]) => transpose_sigma(row_block, column_block),
+            _ => None,
+        };
+        result.push(TransposeRelation {
+            row: *row,
+            column: *column,
+            sigma,
+        });
+    }
+    result.sort();
+    result
+}
+
+/// The signed-graph gauge (§7): rows are nodes, decided two-sided off-diagonal pairs are edges
+/// signed by `σ`; balanced iff a `±1` per row reproduces every edge sign as a product.
+fn derive_sign_gauge(
+    structure: &[BlockStructure],
+    block_symmetry: &[(SymbolId, FormSymmetry)],
+    transpose_relation: &[TransposeRelation],
+) -> (Option<SignGauge>, Option<String>) {
+    let rows = structure
+        .iter()
+        .map(|block| block.row)
+        .collect::<BTreeSet<_>>();
+    for block in structure {
+        if block.present && block.row == block.column && block.class == BlockClass::Convective {
+            return (
+                None,
+                Some(format!(
+                    "diagonal block of row {} is convective; no row orientation makes it \
+                     symmetric",
+                    block.row
+                )),
+            );
+        }
+    }
+    for (row, symmetry) in block_symmetry {
+        if *symmetry != FormSymmetry::Symmetric {
+            return (
+                None,
+                Some(format!(
+                    "diagonal block of row {row} is {symmetry:?}; a sign gauge needs every \
+                     present diagonal block Symmetric"
+                )),
+            );
+        }
+    }
+    let present = structure
+        .iter()
+        .filter(|block| block.present)
+        .map(|block| (block.row, block.column))
+        .collect::<BTreeSet<_>>();
+    for (row, column) in &present {
+        if row != column && !present.contains(&(*column, *row)) {
+            return (
+                None,
+                Some(format!(
+                    "coupling from row {row} to column {column} is one-sided; no row \
+                     orientation makes it symmetric"
+                )),
+            );
+        }
+    }
+    let mut edges = Vec::new();
+    for relation in transpose_relation {
+        if relation.row >= relation.column {
+            continue;
+        }
+        let Some(sigma) = relation.sigma else {
+            return (
+                None,
+                Some(format!(
+                    "transpose relation between rows {} and {} is undecided",
+                    relation.row, relation.column
+                )),
+            );
+        };
+        edges.push(SignedEdge {
+            row: relation.row,
+            column: relation.column,
+            sigma,
+        });
+    }
+    // Propagate from each component's smallest row along a BFS spanning forest.
+    let mut signs: BTreeMap<SymbolId, i8> = BTreeMap::new();
+    let mut forest = Vec::new();
+    for root in &rows {
+        if signs.contains_key(root) {
+            continue;
+        }
+        signs.insert(*root, 1);
+        let mut queue = std::collections::VecDeque::from([*root]);
+        while let Some(node) = queue.pop_front() {
+            let node_sign = signs[&node];
+            for edge in &edges {
+                let other = if edge.row == node {
+                    edge.column
+                } else if edge.column == node {
+                    edge.row
+                } else {
+                    continue;
+                };
+                if signs.contains_key(&other) {
+                    continue;
+                }
+                signs.insert(other, node_sign * edge.sigma);
+                forest.push(*edge);
+                queue.push_back(other);
+            }
+        }
+    }
+    for edge in &edges {
+        if signs[&edge.row] * signs[&edge.column] != edge.sigma {
+            return (
+                None,
+                Some(format!(
+                    "signed row graph is unbalanced: rows {} and {} need σ = {} but the \
+                     spanning-forest signs give {}",
+                    edge.row,
+                    edge.column,
+                    edge.sigma,
+                    signs[&edge.row] * signs[&edge.column]
+                )),
+            );
+        }
+    }
+    forest.sort();
+    (
+        Some(SignGauge {
+            signs: signs.into_iter().collect(),
+            proof: SignedGraphBalance {
+                edges,
+                spanning_forest: forest,
+            },
+        }),
+        None,
+    )
+}
+
 fn classify_block_class(
     row: SymbolId,
     column: SymbolId,
@@ -768,15 +1382,22 @@ fn derive_blocks(blocks: &[BlockView]) -> (Vec<BlockStructure>, bool) {
     let mut field_order: BTreeSet<SymbolId> = BTreeSet::new();
     for block in blocks {
         field_order.insert(block.row);
-        let mut test_kinds: BTreeSet<DerivativeEvaluation> = BTreeSet::new();
+        // Test evaluations are collected per column, from the integrals in which that column
+        // is active: pooling a row's test evaluations across all of its integrals made a mixed
+        // row's mass block (`K⁻¹ q · w`) look convective because the same row's constraint term
+        // (`-p div(w)`) evaluates the test divergence (`/2`, corpus 13).
+        let mut test_kinds: BTreeMap<SymbolId, BTreeSet<DerivativeEvaluation>> = BTreeMap::new();
         let mut active_kinds: BTreeMap<SymbolId, BTreeSet<DerivativeEvaluation>> = BTreeMap::new();
         for integral in &block.factorization.integrals {
+            let mut integral_tests: BTreeSet<DerivativeEvaluation> = BTreeSet::new();
+            let mut integral_columns: BTreeSet<SymbolId> = BTreeSet::new();
             for input in &integral.tensor_program.inputs {
                 match input.role {
                     TensorProgramInputRole::Test => {
-                        test_kinds.insert(input.binding.evaluation.derivative);
+                        integral_tests.insert(input.binding.evaluation.derivative);
                     }
                     TensorProgramInputRole::Active => {
+                        integral_columns.insert(input.binding.symbol);
                         active_kinds
                             .entry(input.binding.symbol)
                             .or_default()
@@ -785,6 +1406,12 @@ fn derive_blocks(blocks: &[BlockView]) -> (Vec<BlockStructure>, bool) {
                     _ => {}
                 }
             }
+            for column in integral_columns {
+                test_kinds
+                    .entry(column)
+                    .or_default()
+                    .extend(integral_tests.iter().copied());
+            }
         }
         let row_coordinates = coordinates.entry(block.row).or_default();
         for (column, kinds) in &active_kinds {
@@ -792,7 +1419,7 @@ fn derive_blocks(blocks: &[BlockView]) -> (Vec<BlockStructure>, bool) {
             row_coordinates.insert(*column);
             classes.insert(
                 (block.row, *column),
-                classify_block_class(block.row, *column, &test_kinds, kinds),
+                classify_block_class(block.row, *column, &test_kinds[column], kinds),
             );
         }
     }
@@ -1005,6 +1632,10 @@ fn build_structure(
     };
     let (block_structures, saddle_point) = derive_blocks(blocks);
     let nullspace_candidates = derive_nullspace_candidates(blocks);
+    let block_symmetry = derive_block_symmetry(blocks, &properties);
+    let transpose_relation = derive_transpose_relations(blocks, &block_structures);
+    let (sign_gauge, sign_gauge_reason) =
+        derive_sign_gauge(&block_structures, &block_symmetry, &transpose_relation);
     let property_dependence = properties.into_values().collect::<Vec<_>>();
     let time = derive_time_structure(blocks, dae_plan);
 
@@ -1019,6 +1650,10 @@ fn build_structure(
         nullspace_candidates: &nullspace_candidates,
         property_dependence: &property_dependence,
         time: &time,
+        block_symmetry: &block_symmetry,
+        transpose_relation: &transpose_relation,
+        sign_gauge: &sign_gauge,
+        sign_gauge_reason: &sign_gauge_reason,
     });
     let structure = OperatorStructure {
         schema: OPERATOR_STRUCTURE_SCHEMA.into(),
@@ -1031,6 +1666,10 @@ fn build_structure(
         nullspace_candidates,
         property_dependence,
         time,
+        block_symmetry,
+        transpose_relation,
+        sign_gauge,
+        sign_gauge_reason,
         identity,
     };
     structure.validate()?;
@@ -1049,6 +1688,31 @@ impl OperatorStructure {
             return Err(structure_error(
                 "STRUCTURE_NONCANONICAL",
                 "blocks must be uniquely sorted by (row, column)",
+            ));
+        }
+        if self
+            .block_symmetry
+            .windows(2)
+            .any(|pair| pair[0].0 >= pair[1].0)
+            || self
+                .transpose_relation
+                .windows(2)
+                .any(|pair| (pair[0].row, pair[0].column) >= (pair[1].row, pair[1].column))
+            || self.sign_gauge.as_ref().is_some_and(|gauge| {
+                gauge.signs.windows(2).any(|pair| pair[0].0 >= pair[1].0)
+                    || gauge.signs.iter().any(|(_, sign)| sign.abs() != 1)
+            })
+        {
+            return Err(structure_error(
+                "STRUCTURE_NONCANONICAL",
+                "block symmetry, transpose relations, and gauge signs must be uniquely sorted \
+                 by row with unit signs",
+            ));
+        }
+        if self.sign_gauge.is_some() == self.sign_gauge_reason.is_some() {
+            return Err(structure_error(
+                "STRUCTURE_INVALID",
+                "exactly one of sign_gauge and sign_gauge_reason must be present",
             ));
         }
         if self
@@ -1093,6 +1757,10 @@ impl OperatorStructure {
             nullspace_candidates: &self.nullspace_candidates,
             property_dependence: &self.property_dependence,
             time: &self.time,
+            block_symmetry: &self.block_symmetry,
+            transpose_relation: &self.transpose_relation,
+            sign_gauge: &self.sign_gauge,
+            sign_gauge_reason: &self.sign_gauge_reason,
         });
         if self.identity != expected {
             return Err(structure_error(

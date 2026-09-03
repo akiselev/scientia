@@ -1,6 +1,6 @@
 # Scientia status
 
-Updated: 2026-09-01
+Updated: 2026-09-03
 
 Branch: `master`
 
@@ -30,7 +30,9 @@ solving over Methodus and is not part of the simulation execution dependency gra
   canonicalization, frames, provider signatures and typed provider calls (C1), and a
   presentation-invariant semantic digest. `compile_semantics` is the FC1 boundary.
 - `scientia-binding-slots/1` (C2/C11.1): every case-bindable slot with typed identity and
-  `Required | Unbound | ModelDefined` status; CLI `slots`.
+  `Required | Unbound | ModelDefined` status; CLI `slots`. A defined `source x = expr;` is
+  `ModelDefined`; `input field` / `input value` declarations are `input/<name>` slots (SC
+  runner-free packages, below).
 - `scientia-verification-profile/1` and `scientia-verification-obligation/2` (C6.1): typed
   dimension, invariant, manufactured-solution (exact `ExprId`), convergence, temporal-convergence,
   conservation, patch, rigid-body, limiting-case, inf-sup, and derivative-Taylor obligations;
@@ -38,8 +40,12 @@ solving over Methodus and is not part of the simulation execution dependency gra
 - `scientia-derivative-request/1` types objectives, observables, controls, design variables,
   active/frozen sets, products, conventions, and the fixed-topology shape slice; there is no
   producer from `.res` yet (SV1-A, this wave).
-- `scientia-operator-structure/1` (C5.4): linearity, form symmetry, block coordinates/classes,
-  saddle-point flag, nullspace candidates, property dependence, time structure; CLI `structure`.
+- `scientia-operator-structure/2` (C5.4 + SC §7): linearity, form symmetry, block
+  coordinates/classes, saddle-point flag, nullspace candidates, property dependence, time
+  structure, and the additive residual gauge (`block_symmetry`, `transpose_relation`,
+  `sign_gauge` with a signed-graph proof); CLI `structure`.
+- `ModuleDigest` and `SourceLocator { module, span }` (SC §2.1); `ResolvedModules` carries
+  per-module digests.
 - Structural incidence, matching, SCC/BLT, tearing, alias, and DAE planning; coupling graphs.
 - `VariationalForm` (`scientia-variational-form/4`): authored forms and derived strong equations
   with generated typed test arguments, physical-field captures, space-aware integration by parts,
@@ -91,6 +97,51 @@ solving over Methodus and is not part of the simulation execution dependency gra
   (50), 4-vector integrands (38), rank-mismatched contractions (44, 49), `sym_grad` of a scalar
   momentum field (29).
 
+### SC runner-free packages (2026-09-03): residual gauge, slot classification, locators
+
+- **`scientia-operator-structure/2`** (`sinbad/ARCHITECTURE.md` §7, additive to C5.4):
+  `block_symmetry: Vec<(SymbolId, FormSymmetry)>` per present diagonal block, decided by the
+  evaluation-paired test/active exchange of every integral linear in its active inputs;
+  `transpose_relation: Vec<TransposeRelation { row, column, sigma: Option<i8> }>` per
+  two-sided off-diagonal pair, deciding `A_ij ≈ σ A_jiᵀ` by exchanging test/active roles,
+  relabeling shared coefficient inputs by binding, renumbering axes, and splitting an overall
+  sign; `sign_gauge: Option<SignGauge { signs: Vec<(SymbolId, i8)>, proof: SignedGraphBalance
+  { edges, spanning_forest } }>` when every present diagonal block is `Symmetric`, none is
+  `Convective`, every present coupling is two-sided with a decided `σ`, and the signed row
+  graph is balanced (BFS spanning forest from each component's smallest row); otherwise
+  `sign_gauge_reason` names the first failing condition (exactly one of the two is present,
+  `STRUCTURE_INVALID` otherwise; ordering is `STRUCTURE_NONCANONICAL`). All four fields enter
+  the identity digest. `form_symmetry` keeps its C5.4 meaning (still `Unknown` for every
+  multi-block system). **Deviation from §7:** keys are per-model `SymbolId` row ids and the maps
+  are sorted `Vec`s, because `SysResId` does not exist until SC-W1; SC-W1 re-keys them.
+- **C5.4 block-class fix:** test evaluations are collected per column from the integrals in
+  which that column is active, not pooled over the row. Corpus 13's flux mass block
+  `K⁻¹ q · w` was `Convective` (the row's `-p div(w)` term contributed the test divergence);
+  it is now `Reaction`, so Darcy gauges as `{flux: +1, pressure: -1}` with `σ = -1`.
+- **Corpus effect:** 13 gauges. 25 does not: the momentum diagonal is `Unknown` because the
+  viscous stress reaches the tensor program as one opaque `ModelDefinedConstitutive` input
+  (its JVP is the frozen-coefficient zero), so no exchange is possible at the tensor level;
+  `σ = -1` for both Stokes couplings is decided. Seeing through constitutive definitions
+  (`2 μ sym_grad(u) : grad(v)`) needs expansion of the definition plus an index-symmetry
+  normal form; recorded as the next `/2` refinement, not silently guessed.
+- **Slots (§3.3):** `source x = expr;` is `ModelDefined` with its expression recorded (08's
+  `joule`); valueless `source` stays `Required`. New declarations `input field x: Kind on D;`
+  and `input value x: Kind;` (soft keyword `input`, only before `field`/`value`; a definition or
+  a missing domain is `PARSE_SYNTAX`) elaborate as `SemanticDeclarationKind::InputField {
+  domain }` with role `Source` and `InputValue` with role `Parameter`, so the form path treats
+  them like today's external data; slots are `input/<name>`, always `Required`, kinds
+  `ExternalValue` / `Parameter` (the frozen C2 `SlotKind` enum is not extended: Sinbad matches
+  it exhaustively). `ScientificModel.inputs` is skipped from the digest projection when empty,
+  so every existing module digest is unchanged. Schema ids stay `scientia-binding-slots/1` and
+  `scientia-semantic/5`: both additions are purely additive and only appear when authored.
+- **`SourceLocator { module: ModuleDigest, span: SourceSpan }`** (§2.1). `ModuleDigest` is the
+  typed `semantic_digest` of one module; `ResolvedModules.module_digests` lists it per module;
+  `SemanticCompilation::module_digest()` / `locate(span)` produce locators for the root module.
+  `SourceSpan` gained `Ord`/`Hash`.
+- **Sinbad consumer note:** `SlotKind::ExternalValue` with `status == ModelDefined` must not
+  demand a case binding (`plan.rs` treats every `ExternalValue` as required today); `input/…`
+  ids bind like `source/…` (field) and `parameter/…` (value).
+
 ## Removed
 
 The pre-form pipeline and its frontends, duplicate form/discrete/operator/backend types,
@@ -100,13 +151,14 @@ acceptance oracle.
 
 ## Validation
 
-Verified locally on 2026-09-01 (batch P tree):
+Verified locally on 2026-09-03 (SC runner-free tree):
 
 - `cargo fmt --all -- --check`, `cargo clippy --all-targets -- -D warnings`,
   `RUSTDOCFLAGS='-D warnings' cargo doc --no-deps` -- passed.
 - `cargo test` (lib + every integration binary, run per binary with `SINBAD_WORKSPACE` set) --
-  passed: 152 tests, 0 failed (24 lib, 128 integration across 24 binaries including the new
-  `tests/p_natural_closure.rs`, 5 tests).
+  passed: 161 tests, 0 failed (24 lib, 137 integration across 26 binaries including
+  `tests/sc_sign_gauge.rs` (5) and `tests/sc_slots_inputs.rs` (4)).
+- `cargo check` of the Sinbad checkout against this working tree passed (2026-09-03).
 - Corpus sweep: 50/50 elaborate; 97/128 operator factorizations (see batch P above).
 - The GX exit gate passed on 2026-08-31 (Sinbad `a1402f2`); C5.4/C6.1 shapes are corpus-verified
   against `25-stokes.res`/`13-mixed-darcy.res` (`207bb2e`).
@@ -138,8 +190,11 @@ Verified locally on 2026-09-01 (batch P tree):
   (Picard) coefficients, named truthfully in the derivative receipt.
 - Generated test-argument and lifted-capture `SymbolId`s are per-declaration/per-expression
   (`GENERATED_BASE` high bit) and never index `model.symbols`.
-- `form_symmetry` is `Unknown` for every multi-block `OperatorSystem` (the `/2` sign gauge is the
-  next package). `[system].equation_sign` remains Sinbad case data until then.
+- `form_symmetry` is `Unknown` for every multi-block `OperatorSystem`; the `/2` `sign_gauge`
+  is the gauged claim. A diagonal block whose active dependence is hidden behind an opaque
+  constitutive input (Stokes viscous stress) is `Unknown` and blocks the gauge with a reason.
+  `[system].equation_sign` is deleted from `sinbad-case/2` on Sinbad's side once it consumes
+  the gauge.
 - Non-Cartesian coordinate systems validate and are then ignored downstream. `si_bootstrap`
   coverage is what the corpus needs, no more.
 - `use` imports resolve provider declarations only (GX-F4 flatten-by-name); models are not
@@ -148,10 +203,7 @@ Verified locally on 2026-09-01 (batch P tree):
 ## Next compiler work (W7 lane order)
 
 1. **Done:** batch P (above).
-2. Runner-free SC packages (`sinbad/ARCHITECTURE.md` §7, §3.3, §2.1): `scientia-operator-structure/2`
-   with per-block `block_symmetry`, per-pair `transpose_relation`, and a signed-graph
-   `sign_gauge`; defined `source x = expr;` classified `ModelDefined`; `input field`/`input
-   value` slots; `SourceLocator { module, span }`.
+2. **Done:** runner-free SC packages (above).
 3. SV1-A (E7): `DerivativeRequest` producer from `observable`/`objective` declarations with
    `SymbolId`/`ExprId` links and design variables bound to case property slots; inverse-Poisson
    corpus test and a public API Sinbad can call from a compiled case.

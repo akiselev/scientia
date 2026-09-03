@@ -330,15 +330,61 @@ fn derive_model_slots(
                     },
                 );
             }
-            (SemanticRole::Source, SemanticDeclarationKind::Value { .. }) => {
+            (SemanticRole::Source, SemanticDeclarationKind::Value { value }) => {
                 let ty = declaration
                     .symbol
                     .map(|symbol| &model.symbols[symbol.index()].ty);
+                // A defined `source x = expr;` is `ModelDefined`, never `Required`: the model
+                // authors the datum (08's Joule term), so a case must not be forced to shadow
+                // it (`sinbad/ARCHITECTURE.md` §3.3). Only a valueless `source x: Kind;` is
+                // external data.
+                let status = if value.is_some() {
+                    SlotStatus::ModelDefined
+                } else {
+                    SlotStatus::Required
+                };
                 insert(
                     &mut slots,
                     BindingSlot {
                         id: format!("source/{}", declaration.name),
                         kind: SlotKind::ExternalValue,
+                        symbol: declaration.symbol,
+                        declaration: Some(declaration.id),
+                        expression: *value,
+                        quantity_kind: ty.and_then(|ty| ty.quantity_kind.clone()),
+                        dimension: ty.and_then(|ty| ty.dimension),
+                        shape: ty.and_then(|ty| numeric_shape(&ty.shape)),
+                        inputs: vec![],
+                        differentiability: None,
+                        locality: None,
+                        status,
+                        span: declaration.span,
+                    },
+                );
+            }
+            // `input field x: Kind on D;` / `input value x: Kind;` (§3.3): binding slots by
+            // construction, always `Required`. Their slot kinds reuse the frozen C2 enum -- an
+            // input field is externally supplied field data exactly like a valueless `source`
+            // (`ExternalValue`), an input value is a valueless `parameter` -- and the `input/`
+            // id prefix records the declaration form.
+            (
+                SemanticRole::Source | SemanticRole::Parameter,
+                SemanticDeclarationKind::InputField { .. } | SemanticDeclarationKind::InputValue,
+            ) => {
+                let ty = declaration
+                    .symbol
+                    .map(|symbol| &model.symbols[symbol.index()].ty);
+                let kind = if matches!(declaration.kind, SemanticDeclarationKind::InputField { .. })
+                {
+                    SlotKind::ExternalValue
+                } else {
+                    SlotKind::Parameter
+                };
+                insert(
+                    &mut slots,
+                    BindingSlot {
+                        id: format!("input/{}", declaration.name),
+                        kind,
                         symbol: declaration.symbol,
                         declaration: Some(declaration.id),
                         expression: None,

@@ -5,13 +5,14 @@
 //! dimensions/kinds, frame, and role metadata to every expression node.
 
 use crate::id::span_independent_digest;
+use crate::scientific::ModuleDigest;
 use crate::scientific::{
     BinaryOp, BoundaryConditionKind, CoordinateSystem, DerivativeContract, Expr, FieldDecl,
-    FieldRole, InputBounds, Measure, OutOfValidityPolicy, PropertyDomain, PropertyLocality,
-    ProviderDecl, ScientificModel as SourceModel, ScientificModule, SpaceSpec, UnaryOp, ValueDecl,
-    ValueShape, canonicalize_authored_quantity,
+    FieldRole, InputBounds, InputDecl, InputDeclKind, Measure, OutOfValidityPolicy, PropertyDomain,
+    PropertyLocality, ProviderDecl, ScientificModel as SourceModel, ScientificModule, SpaceSpec,
+    UnaryOp, ValueDecl, ValueShape, canonicalize_authored_quantity,
 };
-use crate::source::{RelatedSpan, SourceDiagnostic, SourceSeverity, SourceSpan};
+use crate::source::{RelatedSpan, SourceDiagnostic, SourceLocator, SourceSeverity, SourceSpan};
 use quantitas::{
     Dimension, QuantityKindId, QuantityKindRegistry, QuantityLiteral, UnitId, UnitRegistry,
 };
@@ -134,6 +135,21 @@ pub struct SemanticCompilation {
     /// Excluded from `semantic`'s arena so it never perturbs `semantic_arena_digest`.
     #[serde(default)]
     pub advisories: Vec<SourceDiagnostic>,
+}
+
+impl SemanticCompilation {
+    /// The [`ModuleDigest`] of the compiled root module (`sinbad/ARCHITECTURE.md` §2.1).
+    pub fn module_digest(&self) -> ModuleDigest {
+        ModuleDigest::of(&self.source)
+    }
+
+    /// Locate a span of the compiled root module across a module closure.
+    pub fn locate(&self, span: SourceSpan) -> SourceLocator {
+        SourceLocator {
+            module: self.module_digest(),
+            span,
+        }
+    }
 }
 
 /// The unit and quantity-kind registries an elaboration resolves declared units and quantity
@@ -632,6 +648,14 @@ pub enum SemanticDeclarationKind {
     Value {
         value: Option<ExprId>,
     },
+    /// `input field x: Kind on D;` (SC §3.3): externally supplied field data on `domain`; the
+    /// declaration's role is `Source` so the form path treats it exactly like a valueless
+    /// `source`.
+    InputField {
+        domain: DomainId,
+    },
+    /// `input value x: Kind;` (SC §3.3): one externally supplied datum; role `Parameter`.
+    InputValue,
     Property {
         value: ExprId,
     },
@@ -1027,6 +1051,9 @@ impl<'a> Elaborator<'a> {
         for value in &self.source.sources {
             self.declare_value(value, SemanticRole::Source, diagnostics);
         }
+        for input in &self.source.inputs {
+            self.declare_input(input, diagnostics);
+        }
         let properties = self
             .source
             .properties
@@ -1172,6 +1199,41 @@ impl<'a> Elaborator<'a> {
 
     fn region_id(&self, kind: RegionKind, name: &str) -> RegionId {
         self.region_names[&(kind, name.to_owned())]
+    }
+
+    /// `input field` symbols are typed like a valueless `source` (deferred shape, declared
+    /// dimension) and carry their domain; `input value` symbols are typed like a valueless
+    /// `parameter` (scalar). Neither has a definition, by grammar.
+    fn declare_input(&mut self, input: &InputDecl, diagnostics: &mut Vec<SourceDiagnostic>) {
+        let (dimension, kind) = self.declared_quantity_type(
+            input.quantity_kind.as_ref(),
+            input.quantity_kind_span,
+            input.unit.as_ref(),
+            input.unit_span,
+            KindSeverity::Advisory,
+            diagnostics,
+        );
+        let (mut ty, domain) = match input.kind {
+            InputDeclKind::Field => {
+                let domain = input.domain.as_deref().and_then(|name| {
+                    self.resolve_domain(name, input.domain_span.unwrap_or(input.span), diagnostics)
+                });
+                let mut deferred = SemanticType::deferred(SemanticRole::Source);
+                deferred.dimension = dimension;
+                (deferred, domain)
+            }
+            InputDeclKind::Value => (
+                SemanticType::numeric(
+                    ValueShape::Scalar,
+                    dimension,
+                    Frame::Neutral,
+                    SemanticRole::Parameter,
+                ),
+                None,
+            ),
+        };
+        ty.quantity_kind = kind;
+        self.insert_symbol(&input.name, ty, domain, None, input.span, diagnostics);
     }
 
     fn declare_value(
@@ -1541,6 +1603,33 @@ impl<'a> Elaborator<'a> {
         }
         for value in &self.source.sources {
             self.elaborate_value(value, SemanticRole::Source, diagnostics);
+        }
+        for input in &self.source.inputs {
+            let (role, domain, kind) = match input.kind {
+                InputDeclKind::Field => {
+                    let domain = input.domain.as_deref().and_then(|name| {
+                        self.resolve_domain(
+                            name,
+                            input.domain_span.unwrap_or(input.span),
+                            diagnostics,
+                        )
+                    });
+                    let Some(domain) = domain else {
+                        continue;
+                    };
+                    (
+                        SemanticRole::Source,
+                        Some(domain),
+                        SemanticDeclarationKind::InputField { domain },
+                    )
+                }
+                InputDeclKind::Value => (
+                    SemanticRole::Parameter,
+                    None,
+                    SemanticDeclarationKind::InputValue,
+                ),
+            };
+            self.push_declaration(&input.name, role, domain, kind, input.span);
         }
         for property in &self.source.properties {
             let expr = self.elaborate_expr(&property.value, diagnostics);
