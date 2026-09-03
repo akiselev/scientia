@@ -14,6 +14,7 @@ pub mod formulation;
 pub mod id;
 pub mod kernel;
 pub mod method;
+pub mod objective;
 pub mod projection;
 pub mod property_kernel;
 pub mod property_tensor;
@@ -69,6 +70,10 @@ pub use method::{
     compile_boundary_integral_method, compile_conservation_law_method,
     compile_finite_difference_method, compile_network_dae_method, compile_particle_method,
 };
+pub use objective::{
+    ActiveInputLink, ActiveInputRole, DerivativeRequestSpec, LINKED_DERIVATIVE_REQUEST_SCHEMA,
+    LinkedDerivativeRequest, ObjectiveLink, derive_derivative_request,
+};
 pub use projection::{
     AlgebraOperation, AlgebraOutcome, AlgebraRefusal, LiftedSymbol, lift_standalone_expr,
     lift_standalone_exprs, project,
@@ -90,12 +95,13 @@ pub use requirements::{
 };
 pub use scientific::{
     CouplingGraph, DerivativeContract, Expr, FilesystemModuleSource, InputDecl, InputDeclKind,
-    ModuleDigest, ModuleSource, NoImports, PropertyBranch, PropertyDefinition, PropertyDomain,
-    PropertyEvidence, PropertyInput, PropertyLocality, PropertyModel, PropertyOutput,
-    PropertyProviderRef, PropertySignature, PropertyTable, ProviderDecl, ProviderDomainBound,
-    ProviderInputDecl, ResolvedModules, ScientificError, ScientificModel, ScientificModule,
-    TableDerivativePolicy, TimeRole, TimeStateSemantics, canonicalize_authored_quantity,
-    derive_coupling_graph, format_scientific_module, parse_expression, parse_scientific_module,
+    ModuleDigest, ModuleSource, NoImports, ObjectiveDecl, PropertyBranch, PropertyDefinition,
+    PropertyDomain, PropertyEvidence, PropertyInput, PropertyLocality, PropertyModel,
+    PropertyOutput, PropertyProviderRef, PropertySignature, PropertyTable, ProviderDecl,
+    ProviderDomainBound, ProviderInputDecl, ResolvedModules, ScientificError, ScientificModel,
+    ScientificModule, TableDerivativePolicy, TimeRole, TimeStateSemantics,
+    canonicalize_authored_quantity, derive_coupling_graph, format_expression,
+    format_scientific_module, parse_expression, parse_scientific_module,
     parse_scientific_module_diagnostics, resolve_modules, semantic_digest, validate_quantities,
 };
 pub use semantic::{

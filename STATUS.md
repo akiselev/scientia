@@ -38,8 +38,10 @@ solving over Methodus and is not part of the simulation execution dependency gra
   conservation, patch, rigid-body, limiting-case, inf-sup, and derivative-Taylor obligations;
   CLI `derive-verification`.
 - `scientia-derivative-request/1` types objectives, observables, controls, design variables,
-  active/frozen sets, products, conventions, and the fixed-topology shape slice; there is no
-  producer from `.res` yet (SV1-A, this wave).
+  active/frozen sets, products, conventions, and the fixed-topology shape slice.
+  **`scientia-derivative-request/2`** (`LinkedDerivativeRequest`, SV1-A below) is the `.res`
+  producer: `derive_derivative_request(compilation, spec)` from `objective`/`observable`
+  declarations with `SymbolId`/`ExprId`/`DeclarationId`/slot links.
 - `scientia-operator-structure/2` (C5.4 + SC §7): linearity, form symmetry, block
   coordinates/classes, saddle-point flag, nullspace candidates, property dependence, time
   structure, and the additive residual gauge (`block_symmetry`, `transpose_relation`,
@@ -142,6 +144,58 @@ solving over Methodus and is not part of the simulation execution dependency gra
   demand a case binding (`plan.rs` treats every `ExternalValue` as required today); `input/…`
   ids bind like `source/…` (field) and `parameter/…` (value).
 
+### SV1-A (2026-09-03): `DerivativeRequest` production from `.res` objectives
+
+- **Grammar:** `objective NAME { minimize|maximize|measure EXPR; }`. Elaborates as
+  `SemanticDeclarationKind::Objective { value, sense }` with role `Observable`, so an objective
+  is also an observable: it gets the `observable/<name>` slot (`ModelDefined`, expression
+  recorded) and the verification profile's `ObservableDefinition`. A missing sense is
+  `PARSE_SYNTAX`. `ScientificModel.objectives` is skipped from the digest projection when empty.
+- **Producer:** `derive_derivative_request(&SemanticCompilation, &DerivativeRequestSpec)
+  -> Result<LinkedDerivativeRequest, DerivativeRefusal>`. The spec names the model, an
+  `objective` or `observable` (an observable is requested with sense `Measure`), active and
+  frozen C2.1 slot ids, the product (`Jvp | Vjp | Gradient`), the state convention, and the
+  level (`Discrete` default). The result (`scientia-derivative-request/2`) carries the
+  unchanged `/1` `DerivativeRequest` record (`request`; Sinbad's own construction sites keep
+  compiling), `ObjectiveLink { name, slot, declaration, symbol, expression, sense, dimension,
+  quantity_kind, depends_on }` (the dependency set is closed over property, constitutive, and
+  model-defined value definitions, so the misfit names `u` and `u_obs`), and
+  `inputs: Vec<ActiveInputLink { name, role: DesignVariable | Control, active, kind, symbol,
+  declaration, provider, expression, dimension, quantity_kind, gradient_dimension }>` sorted by
+  slot id and equal to the `/1` active ∪ frozen partition; `identity` covers all of it and
+  `validate()` checks the `/1` record, the partition (`DERIVATIVE_LINK_PARTITION`), the parent
+  digest (`DERIVATIVE_PARENT_MISMATCH`), and the identity (`DERIVATIVE_IDENTITY_MISMATCH`).
+- **Slot classification (GX decision 8: design variables bound to case property slots):**
+  declared `provider/…`, valueless `parameter/…`, and `input value` slots are `/1`
+  `DesignVariable`s (`parameter_owner = "case slot <id>"`, `dimension` from the signature);
+  valueless `source/…`, `input field`, `boundary/…`, and `initial/…` slots are `/1`
+  `Control`s with `support` = domain, region, or initial state. `gradient_dimension` is
+  `dim(objective) / dim(input)` (inverse Poisson: dimensionless / Diffusivity = s/m²). A
+  symbol with no declared quantity kind is the language's dimensionless scalar (elaboration
+  already types its arithmetic so); a declared but unresolvable kind refuses.
+- **Refusals (`DerivativeRefusal.code`):** `DERIVATIVE_UNKNOWN_MODEL`,
+  `DERIVATIVE_UNKNOWN_OBJECTIVE`, `DERIVATIVE_OBJECTIVE_NOT_SCALAR`,
+  `DERIVATIVE_OBJECTIVE_INVALID`, `DERIVATIVE_OBJECTIVE_DIMENSION_UNKNOWN`,
+  `DERIVATIVE_NO_ACTIVE_INPUT`, `DERIVATIVE_DUPLICATE_INPUT`, `DERIVATIVE_UNKNOWN_SLOT`,
+  `DERIVATIVE_UNBOUND_SLOT` (undeclared provider), `DERIVATIVE_MODEL_DEFINED_SLOT` (e.g.
+  `property/k`; the message names the case slots its definition calls, `provider/diffusivity`),
+  `DERIVATIVE_SLOT_NOT_DIFFERENTIABLE` (domain, region, observable: shape derivatives are
+  SV1-G), `DERIVATIVE_SLOT_DIMENSION_UNKNOWN`, `DERIVATIVE_SCHEMA_MISMATCH`, plus the `/1`
+  codes. Conventions: `Real`, `Smooth`, `shape: None`; dependence is `Partial` for
+  `FixedState` and `Total` for `ConvergedState`/`AcceptedTrajectory`.
+- **Tests:** `tests/sv1_a_derivative_request.rs` on the inverse-Poisson model (corpus 01 plus
+  `input field u_obs: Dimensionless on Omega;` and `objective misfit { minimize
+  integrate(0.5 * (u - u_obs) * (u - u_obs)); }`) and, opt-in, on the unmodified corpus
+  `01-poisson.res` (`energy` as a `Measure` objective, VJP with respect to
+  `provider/diffusivity`, `source/f` frozen).
+- **Sinbad consumer note (E7):** call `derive_derivative_request` from the compiled case with
+  the case's chosen slot ids; read `inputs[*].provider`/`symbol` to route the parameter VJP,
+  `objective.expression` to evaluate `J` through the observable evaluator, and
+  `gradient_dimension` for the gradient artifact's units. `derivative_campaign.rs`'s own
+  `DerivativeRequest` literal should become a `LinkedDerivativeRequest` from this producer
+  (decision 8). The `/1` `semantic_expression` is the formatter's canonical spelling of the
+  authored expression. Not landed: a `derivative-request` CLI subcommand.
+
 ## Removed
 
 The pre-form pipeline and its frontends, duplicate form/discrete/operator/backend types,
@@ -156,8 +210,9 @@ Verified locally on 2026-09-03 (SC runner-free tree):
 - `cargo fmt --all -- --check`, `cargo clippy --all-targets -- -D warnings`,
   `RUSTDOCFLAGS='-D warnings' cargo doc --no-deps` -- passed.
 - `cargo test` (lib + every integration binary, run per binary with `SINBAD_WORKSPACE` set) --
-  passed: 161 tests, 0 failed (24 lib, 137 integration across 26 binaries including
-  `tests/sc_sign_gauge.rs` (5) and `tests/sc_slots_inputs.rs` (4)).
+  passed: 166 tests, 0 failed (24 lib, 142 integration across 27 binaries including
+  `tests/sc_sign_gauge.rs` (5), `tests/sc_slots_inputs.rs` (4), and
+  `tests/sv1_a_derivative_request.rs` (5)).
 - `cargo check` of the Sinbad checkout against this working tree passed (2026-09-03).
 - Corpus sweep: 50/50 elaborate; 97/128 operator factorizations (see batch P above).
 - The GX exit gate passed on 2026-08-31 (Sinbad `a1402f2`); C5.4/C6.1 shapes are corpus-verified
@@ -184,7 +239,8 @@ Verified locally on 2026-09-03 (SC runner-free tree):
 
 ## Known limits
 
-- `DerivativeRequest` has no `.res` producer (SV1-A, this wave); `evidence.rs` has no consumer.
+- `evidence.rs` has no consumer. `derive_derivative_request` has no CLI subcommand yet;
+  shape design variables (`shape: None`) are SV1-G.
 - FC4 JVPs inline only scalar properties whose definition wraps differentiable provider calls;
   vector-valued provider outputs (`convect`, `gravity_vector`) and constitutive laws stay frozen
   (Picard) coefficients, named truthfully in the derivative receipt.
@@ -204,9 +260,7 @@ Verified locally on 2026-09-03 (SC runner-free tree):
 
 1. **Done:** batch P (above).
 2. **Done:** runner-free SC packages (above).
-3. SV1-A (E7): `DerivativeRequest` producer from `observable`/`objective` declarations with
-   `SymbolId`/`ExprId` links and design variables bound to case property slots; inverse-Poisson
-   corpus test and a public API Sinbad can call from a compiled case.
+3. **Done:** SV1-A (above).
 4. SC-W1 (§2, §3): scoped by-reference imports (`GlobalDeclId`, `use` aliases/selective lists,
    `pub`), `model` as the implicit one-instance system, `system`/`instance`/`bind`, the system
    arena (`SysVarId`/`SysResId`, `OriginMap`), `scientia-system/1`, `scientia-operator-system/2`,

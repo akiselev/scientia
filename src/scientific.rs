@@ -43,6 +43,10 @@ pub struct ScientificModel {
     pub interface_conditions: Vec<BoundaryConditionDecl>,
     pub observables: Vec<ObservableDecl>,
     pub invariants: Vec<ObservableDecl>,
+    /// `objective NAME { minimize|maximize|measure EXPR; }` (SV1-A). Skipped from the digest
+    /// projection when empty so every pre-SV1 module keeps its digest.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub objectives: Vec<ObjectiveDecl>,
     pub verifications: Vec<VerificationAnnotation>,
     pub span: SourceSpan,
 }
@@ -279,6 +283,17 @@ pub enum BoundaryConditionKind {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ObservableDecl {
     pub name: String,
+    pub value: Expr,
+    pub span: SourceSpan,
+}
+
+/// `objective NAME { minimize EXPR; }`: a scalar functional of the model with an optimization
+/// sense (SV1-A, `scientia-derivative-request/2`). An objective is also an observable: it is
+/// evaluated like one and appears as an `observable/<name>` slot.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ObjectiveDecl {
+    pub name: String,
+    pub sense: crate::derivative::ObjectiveSense,
     pub value: Expr,
     pub span: SourceSpan,
 }
@@ -780,6 +795,7 @@ impl Parser {
             interface_conditions: vec![],
             observables: vec![],
             invariants: vec![],
+            objectives: vec![],
             verifications: vec![],
             span,
         };
@@ -850,6 +866,10 @@ impl Parser {
             } else if self.eat_ident("invariant") {
                 if let Some(x) = self.observable() {
                     model.invariants.push(x);
+                }
+            } else if self.eat_ident("objective") {
+                if let Some(x) = self.objective() {
+                    model.objectives.push(x);
                 }
             } else if self.eat_punct('@') {
                 if let Some(x) = self.verification() {
@@ -1642,6 +1662,37 @@ impl Parser {
         self.eat_punct(';');
         Some(ObservableDecl { name, value, span })
     }
+    fn objective(&mut self) -> Option<ObjectiveDecl> {
+        use crate::derivative::ObjectiveSense;
+        let (name, span) = self.expect_ident_value()?;
+        self.expect_punct('{');
+        let sense = if self.eat_ident("minimize") {
+            ObjectiveSense::Minimize
+        } else if self.eat_ident("maximize") {
+            ObjectiveSense::Maximize
+        } else if self.eat_ident("measure") {
+            ObjectiveSense::Measure
+        } else {
+            let span = self.token().span;
+            self.errors.push(ScientificError::Syntax {
+                message: format!(
+                    "objective `{name}` must open with `minimize`, `maximize`, or `measure`"
+                ),
+                span,
+            });
+            return None;
+        };
+        let value = self.expr(0)?;
+        self.eat_punct(';');
+        self.expect_punct('}');
+        self.eat_punct(';');
+        Some(ObjectiveDecl {
+            name,
+            sense,
+            value,
+            span,
+        })
+    }
     fn verification(&mut self) -> Option<VerificationAnnotation> {
         let (name, span) = self.expect_ident_value()?;
         let mut args = BTreeMap::new();
@@ -2176,6 +2227,18 @@ pub fn format_scientific_module(module: &ScientificModule) -> String {
                 format_expr(&i.value)
             ));
         }
+        for objective in &model.objectives {
+            let sense = match objective.sense {
+                crate::derivative::ObjectiveSense::Minimize => "minimize",
+                crate::derivative::ObjectiveSense::Maximize => "maximize",
+                crate::derivative::ObjectiveSense::Measure => "measure",
+            };
+            out.push_str(&format!(
+                "    objective {} {{ {sense} {}; }}\n",
+                objective.name,
+                format_expr(&objective.value)
+            ));
+        }
         for v in &model.verifications {
             out.push_str(&format!("    @{}", v.name));
             if !v.args.is_empty() {
@@ -2275,6 +2338,11 @@ fn format_value_decl(kind: &str, d: &ValueDecl) -> String {
         .unwrap_or_default();
     format!("    {kind} {}{ty}{unit}{value};\n", d.name)
 }
+/// Canonical source rendering of one authored expression (the formatter's spelling).
+pub fn format_expression(expression: &Expr) -> String {
+    format_expr(expression)
+}
+
 fn format_expr(e: &Expr) -> String {
     match e {
         Expr::Number { value, unit, .. } => format!(

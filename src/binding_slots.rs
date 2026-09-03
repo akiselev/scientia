@@ -402,6 +402,7 @@ fn derive_model_slots(
             (
                 SemanticRole::Observable | SemanticRole::Invariant,
                 SemanticDeclarationKind::Observable { value }
+                | SemanticDeclarationKind::Objective { value, .. }
                 | SemanticDeclarationKind::Invariant { value },
             ) => {
                 let ty = &model.expressions[value.index()].ty;

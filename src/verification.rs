@@ -501,7 +501,8 @@ pub fn derive_verification_profiles(compilation: &SemanticCompilation) -> Vec<Ve
 
             for declaration in &model.declarations {
                 match &declaration.kind {
-                    SemanticDeclarationKind::Observable { .. } => observables.push(
+                    SemanticDeclarationKind::Observable { .. }
+                    | SemanticDeclarationKind::Objective { .. } => observables.push(
                         ObservableDefinition {
                             name: declaration.name.clone(),
                             scientific_meaning: format!(

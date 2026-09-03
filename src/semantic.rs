@@ -683,6 +683,12 @@ pub enum SemanticDeclarationKind {
     Observable {
         value: ExprId,
     },
+    /// `objective NAME { sense EXPR; }` (SV1-A): an observable with an optimization sense; the
+    /// declaration's role is `Observable`.
+    Objective {
+        value: ExprId,
+        sense: crate::derivative::ObjectiveSense,
+    },
     Invariant {
         value: ExprId,
     },
@@ -1752,6 +1758,19 @@ impl<'a> Elaborator<'a> {
                 None,
                 SemanticDeclarationKind::Observable { value: expression },
                 observable.span,
+            );
+        }
+        for objective in &self.source.objectives {
+            let expression = self.elaborate_expr(&objective.value, diagnostics);
+            self.push_declaration(
+                &objective.name,
+                SemanticRole::Observable,
+                None,
+                SemanticDeclarationKind::Objective {
+                    value: expression,
+                    sense: objective.sense,
+                },
+                objective.span,
             );
         }
         for invariant in &self.source.invariants {
