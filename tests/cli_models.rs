@@ -88,3 +88,98 @@ fn model_qualified_selectors_address_every_model_aware_command() {
     );
     fs::remove_file(path).unwrap();
 }
+
+/// SC-W1: `system` compiles a declared system through `--module-root` and a bare model as its
+/// implicit one-instance system.
+#[test]
+fn system_command_compiles_declared_and_implicit_systems() {
+    let root = std::env::temp_dir().join(format!("scientia-cli-system-{}", std::process::id()));
+    let physics = root.join("physics");
+    fs::create_dir_all(&physics).unwrap();
+    fs::write(
+        physics.join("heat.res"),
+        r#"
+module physics.heat;
+pub model Heat {
+  domain body { dimension = 2; coordinates = cartesian; }
+  field T: unknown scalar H1(order=1) on body;
+  input field Q: VolumetricHeatSource on body;
+  equation energy on body { -div(grad(T)) = Q; }
+  boundary walls on boundary("walls") { dirichlet T = 0; }
+  output temperature = T;
+  output load: VolumetricHeatSource on body = 2 * T;
+}
+"#,
+    )
+    .unwrap();
+    let system_path = root.join("two.res");
+    fs::write(
+        &system_path,
+        r#"
+module systems.two;
+use physics.heat.{Heat};
+pub system Two {
+  domain body { dimension = 2; coordinates = cartesian; }
+  instance a: Heat(body = body);
+  instance b: Heat(body = body);
+  bind b.Q <- a.load;
+}
+"#,
+    )
+    .unwrap();
+    let root_text = root.to_str().unwrap();
+    let output = run(&[
+        "system",
+        "--module-root",
+        root_text,
+        system_path.to_str().unwrap(),
+    ]);
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(
+        output.status.success(),
+        "{stdout}{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        stdout.contains("system Two (declared; 2 modules in closure"),
+        "{stdout}"
+    );
+    assert!(stdout.contains("bind     b/input/Q <- a.load"), "{stdout}");
+    assert!(
+        stdout.contains("composed via b/input/Q (1 kernel composition(s))"),
+        "{stdout}"
+    );
+    let json = run(&[
+        "system",
+        "--json",
+        "--module-root",
+        root_text,
+        system_path.to_str().unwrap(),
+        "System:Two",
+    ]);
+    assert!(json.status.success());
+    let value: serde_json::Value = serde_json::from_slice(&json.stdout).unwrap();
+    assert_eq!(value["system"]["schema"], "scientia-system/1");
+    assert_eq!(value["operator"]["schema"], "scientia-operator-system/2");
+
+    let implicit = run(&[
+        "system",
+        physics.join("heat.res").to_str().unwrap(),
+        "Model:Heat",
+    ]);
+    let stdout = String::from_utf8(implicit.stdout).unwrap();
+    assert!(
+        implicit.status.success(),
+        "{stdout}{}",
+        String::from_utf8_lossy(&implicit.stderr)
+    );
+    assert!(
+        stdout.contains("system Heat (implicit one-instance;"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("slot     Required       input/Q"),
+        "{stdout}"
+    );
+    fs::remove_dir_all(&root).ok();
+}

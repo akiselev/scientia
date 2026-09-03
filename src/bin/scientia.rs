@@ -1,12 +1,14 @@
 use quantitas::{QuantityKindRegistry, UnitRegistry};
 use scientia::{
-    FilesystemModuleSource, IncidenceSystem, NoImports, Registries, SemanticDeclarationKind,
-    SemanticModel, SemanticModule, SourceDiagnostic, compile_operator_system, compile_schedule,
-    compile_semantics_with, compile_variational_form, derive_binding_slots, derive_coupling_graph,
-    derive_operator_structure, derive_operator_structure_for_system, derive_variational_form,
-    derive_verification_profiles, factor_operator, format_scientific_module,
-    infer_form_requirements, pantelides_plan, parse_scientific_module_diagnostics,
-    semantic_arena_digest, semantic_digest,
+    BlockConstruction, FilesystemModuleSource, IncidenceSystem, NoImports, Registries,
+    SemanticDeclarationKind, SemanticModel, SemanticModule, SlotBinding, SourceDiagnostic,
+    compile_model_system, compile_operator_system, compile_schedule, compile_semantics_with,
+    compile_system, compile_system_operator, compile_variational_form, derive_binding_slots,
+    derive_coupling_graph, derive_operator_structure, derive_operator_structure_for_system,
+    derive_variational_form, derive_verification_profiles, factor_operator,
+    format_scientific_module, infer_form_requirements, pantelides_plan,
+    parse_scientific_module_diagnostics, resolve_module_closure, semantic_arena_digest,
+    semantic_digest,
 };
 use std::{env, fs, process::ExitCode};
 
@@ -454,6 +456,140 @@ fn run() -> Result<(), String> {
                 }
             }
         }
+        "system" => {
+            // SC-W1: `system <file> [System:NAME | Model:NAME]` compiles the declared system,
+            // or a model as its implicit one-instance system, into `scientia-system/1` and
+            // `scientia-operator-system/2`.
+            let units = UnitRegistry::si_bootstrap();
+            let kinds = QuantityKindRegistry::si_bootstrap();
+            let registries = Registries::new(&units, &kinds);
+            let closure = match module_root.as_deref() {
+                Some(root) => {
+                    resolve_module_closure(&source, &FilesystemModuleSource { root: root.into() })
+                }
+                None => resolve_module_closure(&source, &NoImports),
+            }
+            .map_err(|error| render_diagnostics(&source, &[error.diagnostic()], json))?;
+            let selection = match selector {
+                Some(value) => match value.split_once(':') {
+                    Some(("System", name)) => ("System", name),
+                    Some(("Model", name)) => ("Model", name),
+                    Some((kind, _)) => {
+                        return Err(format!(
+                            "system selector must be `System:NAME` or `Model:NAME`, found `{kind}:`"
+                        ));
+                    }
+                    None => ("Model", value),
+                },
+                None => {
+                    if let [system] = module.systems.as_slice() {
+                        ("System", system.name.as_str())
+                    } else if let [model] = module.models.as_slice() {
+                        ("Model", model.name.as_str())
+                    } else {
+                        return Err(
+                            "module declares several systems or models; select one with \
+                             `System:NAME` or `Model:NAME`"
+                                .into(),
+                        );
+                    }
+                }
+            };
+            let compilation = match selection.0 {
+                "System" => compile_system(&closure, registries, selection.1),
+                _ => compile_model_system(&closure, registries, selection.1),
+            }
+            .map_err(|error| error.to_string())?;
+            let operator =
+                compile_system_operator(&compilation).map_err(|error| error.to_string())?;
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "system": compilation.system,
+                        "operator": operator.operator,
+                    }))
+                    .map_err(|error| error.to_string())?
+                );
+            } else {
+                let system = &compilation.system;
+                println!(
+                    "system {} ({}; {} modules in closure {}):",
+                    system.name,
+                    if system.implicit {
+                        "implicit one-instance"
+                    } else {
+                        "declared"
+                    },
+                    closure.modules.len(),
+                    closure.identity
+                );
+                for instance in &system.instances {
+                    println!(
+                        "  instance {:<12} {} @ {}",
+                        if instance.name.is_empty() {
+                            "<root>"
+                        } else {
+                            &instance.name
+                        },
+                        instance.model_name,
+                        instance.model.module
+                    );
+                }
+                for variable in &system.variables {
+                    println!("  variable {:<4} {}", variable.id, variable.name);
+                }
+                for residual in &system.residuals {
+                    let scientia::ResidualOrigin::Equation { name, .. } = &residual.origin;
+                    println!(
+                        "  residual {:<4} {} (orientation {:+})",
+                        residual.id, name, residual.orientation
+                    );
+                }
+                for bind in &system.binds {
+                    let output = &system.outputs[bind.producer.index()];
+                    println!(
+                        "  bind     {} <- {}.{}",
+                        bind.consumer_slot,
+                        system.instances[output.instance.index()].name,
+                        output.name
+                    );
+                }
+                for slot in &system.slots.slots {
+                    let binding = match slot.binding {
+                        SlotBinding::Open => format!("{:?}", slot.slot.status),
+                        SlotBinding::Bound { bind } => format!("Bound(bind {bind})"),
+                    };
+                    println!("  slot     {:<14} {}", binding, slot.id);
+                }
+                for block in &operator.operator.blocks {
+                    let construction = match &block.construction {
+                        BlockConstruction::Local { .. } => "local".to_owned(),
+                        BlockConstruction::Composed {
+                            consumer_slot,
+                            path,
+                            ..
+                        } => format!(
+                            "composed via {consumer_slot} ({})",
+                            match path {
+                                scientia::ComposedPath::KernelInput { compositions, .. } =>
+                                    format!("{} kernel composition(s)", compositions.len()),
+                                scientia::ComposedPath::ProviderInput { properties } =>
+                                    format!("provider input of {} property(ies)", properties.len()),
+                            }
+                        ),
+                    };
+                    println!(
+                        "  block    ({}, {}) {construction}",
+                        block.row, block.column
+                    );
+                }
+                println!(
+                    "  identity system {} operator {}",
+                    system.identity.hex, operator.operator.identity.hex
+                );
+            }
+        }
         "slots" => {
             let compilation = elaborate(&source, module_root.as_deref())
                 .map_err(|diagnostics| render_diagnostics(&source, &diagnostics, json))?;
@@ -478,7 +614,7 @@ fn run() -> Result<(), String> {
 }
 
 fn usage() -> String {
-    "usage: scientia <check|fmt|parse|elaborate|inspect|freeze|explain|coupling|structural|structure|form|derive-form|requirements|derive-requirements|operator|derive-operator|derive-verification|slots> [--json] [--module-root <dir>] <model.res> [model|model:item] [detail]".into()
+    "usage: scientia <check|fmt|parse|elaborate|inspect|freeze|explain|coupling|structural|structure|form|derive-form|requirements|derive-requirements|operator|derive-operator|derive-verification|slots|system> [--json] [--module-root <dir>] <model.res> [model|model:item|System:name|Model:name] [detail]".into()
 }
 
 fn select_model<'a>(

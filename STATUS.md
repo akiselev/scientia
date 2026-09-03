@@ -69,7 +69,10 @@ solving over Methodus and is not part of the simulation execution dependency gra
 - FC8 `OperatorSystem` (`scientia-operator-system/1`) for multi-equation systems; FC10
   `MethodProgram` compilers for FV/FD/network-DAE/particle/boundary-integral families; FC11 Serde
   round trips for every artifact.
-- One `scientia` CLI; multi-model modules require explicit `Model:item` selection.
+- One `scientia` CLI; multi-model modules require explicit `Model:item` selection. `scientia
+  system [--json] [--module-root DIR] <file> [System:NAME | Model:NAME]` compiles a declared
+  system, or a model as its implicit one-instance system, into `scientia-system/1` and
+  `scientia-operator-system/2` (SC-W1).
 
 ### Batch P (2026-09-01): natural boundaries, normal traces, provider calls in integrands
 
@@ -318,7 +321,7 @@ Verified locally on 2026-09-03 (SC runner-free tree):
 - `cargo fmt --all -- --check`, `cargo clippy --all-targets -- -D warnings`,
   `RUSTDOCFLAGS='-D warnings' cargo doc --no-deps` -- passed.
 - `cargo test` (lib + every integration binary, run per binary with `SINBAD_WORKSPACE` set) --
-  passed: 175 tests, 0 failed (24 lib, 151 integration across 28 binaries including
+  passed: 176 tests, 0 failed (24 lib, 152 integration across 28 binaries including
   `tests/sc_sign_gauge.rs` (5), `tests/sc_slots_inputs.rs` (4),
   `tests/sv1_a_derivative_request.rs` (5), and `tests/sc_w1_composition.rs` (9)).
 - `cargo check` of the Sinbad and Finitum checkouts against this working tree passed
@@ -365,7 +368,7 @@ Verified locally on 2026-09-03 (SC runner-free tree):
 - SC-W1 executes SC3a at the kernel level only (Joule chain vs monolithic 08 Joule term at
   sampled points); solution and observable agreement (SC3b) is Sinbad's once the composed
   system runs. `connector`/`port`/`connect`, region parameters, domain relations, system
-  observables, and `Transferred` chains are SC-W2. There is no `system` CLI subcommand yet.
+  observables, and `Transferred` chains are SC-W2.
 
 ## Next compiler work (W7 lane order)
 
@@ -373,8 +376,8 @@ Verified locally on 2026-09-03 (SC runner-free tree):
 2. **Done:** runner-free SC packages (above).
 3. **Done:** SV1-A (above).
 4. **Done:** SC-W1 (above), including the kernel-level SC3a check. Next: SC-W2 (`connector`/
-   `port`/`connect`, region parameters, relations, `Transferred` chains); a `system` CLI
-   subcommand; the `/2` sign gauge through opaque constitutive inputs (Stokes).
+   `port`/`connect`, region parameters, relations, `Transferred` chains); the `/2` sign gauge
+   through opaque constitutive inputs (Stokes).
 
 Deviations from `sinbad/ARCHITECTURE.md` are recorded in the batch/package sections above with
 their reasons; the coordinator folds them into GX-CONTRACTS C12. Scientia remains execution-free.
