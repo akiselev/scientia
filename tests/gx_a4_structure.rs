@@ -193,21 +193,23 @@ fn sinbad_saddle_point_corpus_models_derive_structure_and_inf_sup_obligations() 
     let Some(dir) = sinbad_corpus_dir() else {
         return;
     };
-    let cases: &[(&str, &str, &[&str], &str)] = &[
+    let cases: &[(&str, &str, &[&str], &str, &str)] = &[
         (
             "25-stokes.res",
             "StokesFlow",
             &["momentum", "incompressibility"],
             "Taylor-Hood",
+            "velocity",
         ),
         (
             "13-mixed-darcy.res",
             "MixedDarcy",
             &["darcy_law", "mass_balance"],
             "RT0-P0",
+            "flux",
         ),
     ];
-    for (file, model, equations, expected_pair) in cases {
+    for (file, model, equations, expected_pair, expected_constrained) in cases {
         let path = dir.join(file);
         let source = std::fs::read_to_string(&path)
             .unwrap_or_else(|error| panic!("reading {}: {error}", path.display()));
@@ -241,7 +243,28 @@ fn sinbad_saddle_point_corpus_models_derive_structure_and_inf_sup_obligations() 
             .obligations
             .iter()
             .find_map(|obligation| match &obligation.kind {
-                VerificationObligationKind::InfSup { pair } => Some(pair.as_str()),
+                VerificationObligationKind::InfSup {
+                    pair,
+                    constrained,
+                    multiplier,
+                } => {
+                    let name = |symbol: Option<scientia::SymbolId>| {
+                        symbol.map(|symbol| {
+                            compilation.semantic.models[0].symbols[symbol.index()]
+                                .name
+                                .clone()
+                        })
+                    };
+                    assert_eq!(
+                        (name(*constrained), name(*multiplier)),
+                        (
+                            Some(expected_constrained.to_string()),
+                            Some("pressure".to_string())
+                        ),
+                        "{file}: typed inf-sup pairing"
+                    );
+                    Some(pair.as_str())
+                }
                 _ => None,
             })
             .unwrap_or_else(|| panic!("{file}: no InfSup obligation derived from @inf_sup"));

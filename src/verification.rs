@@ -126,8 +126,14 @@ pub enum VerificationObligationKind {
         block: Option<String>,
         active_inputs: Vec<SymbolId>,
     },
+    /// `@inf_sup(pair = "...")`: the display pairing plus, when the model has exactly one
+    /// unknown in a gradient-conforming space (H1/H(div)/H(curl)) and exactly one in L2/DG,
+    /// the constrained field and its multiplier (SC-W1 follow-up for Finitum's inf-sup
+    /// checker); `None` when the pairing cannot be read off the spaces.
     InfSup {
         pair: String,
+        constrained: Option<SymbolId>,
+        multiplier: Option<SymbolId>,
     },
     /// Not part of contract C6.1's kind list: a content-free carrier for obligations whose
     /// `unsupported` field is set (see `VERIFY_UNSUPPORTED_ANNOTATION`). Every other kind now
@@ -432,6 +438,35 @@ fn manufactured_exact_source(model: &SemanticModel, field: SymbolId) -> ExactSol
     ExactSolutionSource::Slot(format!("provider/exact_{field_name}"))
 }
 
+/// The saddle-point pairing readable from the spaces alone: the unique unknown/state field in
+/// H1, H(div), or H(curl) is the constrained field and the unique one in L2/DG is the
+/// multiplier; anything else is undecidable here (Finitum's `InfSupPairing::from_structure`
+/// decides from the operator structure).
+fn inf_sup_pairing(model: &SemanticModel) -> (Option<SymbolId>, Option<SymbolId>) {
+    use crate::scientific::SpaceFamily;
+    let mut constrained = Vec::new();
+    let mut multipliers = Vec::new();
+    for symbol in &model.symbols {
+        if !matches!(
+            symbol.ty.role,
+            SemanticRole::PhysicalField(FieldRole::Unknown | FieldRole::State)
+        ) {
+            continue;
+        }
+        match symbol.space.as_ref().map(|space| &space.family) {
+            Some(SpaceFamily::H1 | SpaceFamily::HDiv | SpaceFamily::HCurl) => {
+                constrained.push(symbol.id)
+            }
+            Some(SpaceFamily::L2 | SpaceFamily::Dg) => multipliers.push(symbol.id),
+            None => {}
+        }
+    }
+    match (constrained.as_slice(), multipliers.as_slice()) {
+        ([constrained], [multiplier]) => (Some(*constrained), Some(*multiplier)),
+        _ => (None, None),
+    }
+}
+
 fn conservation_quantity(arguments: &BTreeMap<String, ExprId>) -> Option<ExprId> {
     if arguments.len() == 1 {
         arguments.values().next().copied()
@@ -729,13 +764,18 @@ pub fn derive_verification_profiles(compilation: &SemanticCompilation) -> Vec<Ve
                                 let pair = arguments
                                     .get("pair")
                                     .map(|expression| argument_label(model, expression.index()));
+                                let (constrained, multiplier) = inf_sup_pairing(model);
                                 match pair {
                                     Some(pair) => obligations.push(make_obligation(
                                         &parent,
                                         &model.name,
                                         declaration.span,
                                         format!("inf-sup stability annotation in {}", model.name),
-                                        VerificationObligationKind::InfSup { pair },
+                                        VerificationObligationKind::InfSup {
+                                            pair,
+                                            constrained,
+                                            multiplier,
+                                        },
                                         vec![],
                                         generated.clone(),
                                         "the discrete inf-sup constant stays bounded away from zero under refinement",

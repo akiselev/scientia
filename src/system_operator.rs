@@ -36,6 +36,8 @@ pub const SYSTEM_OPERATOR_SCHEMA: &str = "scientia-operator-system/2";
 pub struct SysResBlock {
     pub id: SysResId,
     pub origin: ResidualOrigin,
+    /// The per-model row symbol (the field whose space supplied the test argument).
+    pub row: SymbolId,
     pub orientation: i8,
     /// `artifact_digest` of the instance model's `scientia-operator-system/1`.
     pub model_system: Digest,
@@ -113,6 +115,8 @@ pub struct SystemOperator {
     pub root: GlobalDeclId,
     pub system_identity: Digest,
     pub instances: Vec<InstanceRecord>,
+    /// Per instance, the `artifact_digest` of the `scientia-operator-system/1` it reuses.
+    pub instance_artifacts: Vec<(InstanceId, Digest)>,
     pub variables: Vec<SysVar>,
     pub residuals: Vec<SysResBlock>,
     /// Sorted by `(row, column)`.
@@ -253,6 +257,7 @@ pub fn compile_system_operator(
         residuals.push(SysResBlock {
             id: residual.id,
             origin: residual.origin.clone(),
+            row: block.row,
             orientation: residual.orientation,
             model_system: artifact.artifact_digest.clone(),
             block: block_digest(block),
@@ -533,6 +538,10 @@ pub fn compile_system_operator(
         root: system.root.clone(),
         system_identity: system.identity.clone(),
         instances: system.instances.clone(),
+        instance_artifacts: model_systems
+            .iter()
+            .map(|(instance, artifact)| (*instance, artifact.artifact_digest.clone()))
+            .collect(),
         variables: system.variables.clone(),
         residuals,
         blocks,
@@ -564,6 +573,7 @@ struct SystemOperatorIdentity<'a> {
     root: &'a GlobalDeclId,
     system_identity: &'a Digest,
     instances: &'a [InstanceRecord],
+    instance_artifacts: &'a [(InstanceId, Digest)],
     variables: &'a [SysVar],
     residuals: &'a [SysResBlock],
     blocks: &'a [SysBlock],
@@ -578,6 +588,7 @@ impl SystemOperator {
             root: &self.root,
             system_identity: &self.system_identity,
             instances: &self.instances,
+            instance_artifacts: &self.instance_artifacts,
             variables: &self.variables,
             residuals: &self.residuals,
             blocks: &self.blocks,

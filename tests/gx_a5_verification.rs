@@ -177,7 +177,7 @@ fn inf_sup_annotation_carries_the_declared_pairing() {
     let kinds = obligations(INF_SUP_MODEL);
     assert!(kinds.iter().any(|obligation| matches!(
         &obligation.kind,
-        VerificationObligationKind::InfSup { pair } if pair == "Taylor-Hood"
+        VerificationObligationKind::InfSup { pair, .. } if pair == "Taylor-Hood"
     )));
 }
 

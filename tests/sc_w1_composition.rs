@@ -453,6 +453,23 @@ fn model_direct_and_implicit_system_agree_byte_for_byte() {
     let direct_operator =
         compile_operator_system(&direct.semantic, "HeatConduction", &["thermal"]).unwrap();
     assert_eq!(operator.model_systems[0].1, direct_operator);
+    // Finitum's degenerate one-instance identity maps: `SysVarId(symbol.0)`, `SysResId(k)`.
+    let t = direct.semantic.models[0]
+        .symbols
+        .iter()
+        .find(|symbol| symbol.name == "T")
+        .unwrap()
+        .id;
+    assert_eq!(system.variables[0].id, scientia::SysVarId(t.0));
+    assert_eq!(operator.operator.residuals[0].id, scientia::SysResId(0));
+    assert_eq!(
+        operator.operator.residuals[0].row,
+        direct_operator.blocks[0].row
+    );
+    assert_eq!(
+        operator.operator.instance_artifacts,
+        vec![(InstanceId(0), direct_operator.artifact_digest.clone())]
+    );
     assert_eq!(
         operator.operator.residuals[0].block,
         block_digest(&direct_operator.blocks[0])

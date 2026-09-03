@@ -301,6 +301,26 @@ solving over Methodus and is not part of the simulation execution dependency gra
   (`SYSTEM_OPEN_INPUT`), re-binding it to case data yields a DAG scheduled thermal → electrical.
   Test 5 (W1 part): duplicate producers, private symbols, kind/support/cross-domain
   mismatches, and domain-parameter errors are typed refusals; port items are SC-W2.
+- **Finitum alignment (2026-09-03, after Finitum 8d45a71's `SystemIdMap`).** The implicit
+  one-instance system now allocates the identity `SysVarId(symbol.0)` (dense allocation stays
+  for declared systems, instance order then `SymbolId` order) and `SysResId(k)` for the `k`-th
+  equation, matching `SystemIdMap::one_instance` so Krasis's `SemanticId` convention and every
+  single-model realization are numerically unchanged. `SysResBlock` gained `row: SymbolId`
+  (the per-model test-space field) and `SystemOperator` gained `instance_artifacts:
+  Vec<(InstanceId, Digest)>` (the per-instance `/1` artifact digest), the two coordinates
+  `SystemIdMap::compose` keeps. Divergences from the surface recorded in
+  `finitum/src/system_ids.rs`: `OriginMap.variables` is `Vec<VariableOrigin { variable,
+  instance, model: GlobalDeclId, symbol, locator }>` (named fields, same content as the
+  recorded tuple); `OriginMap.residuals` entries are `(SysResId, ResidualOrigin::Equation {
+  instance, declaration, name }, SourceLocator)` (the equation *name* Finitum keys by is on
+  the origin, the `DeclarationId` beside it); the instance record is `InstanceRecord { model:
+  GlobalDeclId, model_name, semantic_digest, … }` with the artifact digest in
+  `SystemOperator.instance_artifacts` rather than on the record (a `ScientificSystem` exists
+  before any operator artifact). `VerificationObligationKind::InfSup` gained `constrained:
+  Option<SymbolId>` and `multiplier: Option<SymbolId>` (the unique gradient-conforming
+  unknown and the unique L2/DG unknown; `None` when the spaces do not decide it), so Finitum's
+  inf-sup checker can pair by symbol instead of by display string (Stokes: velocity/pressure,
+  Darcy: flux/pressure, corpus-verified).
 - **Consumer notes.** Finitum/Sinbad key by `SysVarId`/`SysResId`/`SysRegionId` from
   `ScientificSystem`; `SysVar.local`/`owner` and `OriginMap` give the per-model coordinates;
   slot ids are `<instance>/<local id>` with the implicit root unprefixed, so every existing

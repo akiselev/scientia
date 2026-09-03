@@ -68,7 +68,8 @@ sys_id!(
 );
 sys_id!(
     SysVarId,
-    "Dense system-level variable id (§2.3); Krasis `SemanticId` mirrors it."
+    "System-level variable id (§2.3); Krasis `SemanticId` mirrors it. Dense over a declared \
+     system; the identity `SysVarId(symbol.0)` on the implicit one-instance system."
 );
 sys_id!(SysResId, "Dense system-level residual id (§2.3).");
 sys_id!(SysDomainId, "Dense system-level domain id.");
@@ -711,7 +712,10 @@ impl Builder<'_> {
             self.origin_regions.push((id, instance, region.id));
         }
 
-        // Owned states and unknowns.
+        // Owned states and unknowns. Dense in instance order then `SymbolId` order; the
+        // implicit one-instance system uses the identity `SysVarId(symbol.0)` so Krasis's
+        // `SemanticId` convention and every single-model realization stay numerically
+        // unchanged (Finitum `SystemIdMap::one_instance`).
         for symbol in &model.symbols {
             let SemanticRole::PhysicalField(role @ (FieldRole::Unknown | FieldRole::State)) =
                 &symbol.ty.role
@@ -719,7 +723,11 @@ impl Builder<'_> {
                 continue;
             };
             self.variables.push(SysVar {
-                id: SysVarId(self.variables.len() as u32),
+                id: if self.implicit {
+                    SysVarId(symbol.id.0)
+                } else {
+                    SysVarId(self.variables.len() as u32)
+                },
                 owner: instance,
                 local: symbol.id,
                 name: display(&symbol.name),
