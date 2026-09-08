@@ -411,10 +411,12 @@ fn malformed_fc4_shapes_and_derivative_receipts_are_refused() {
         })
         .unwrap();
     let reduced = diffusion.primal.outputs[0].expression.clone();
+    // Additive finite sums are supported by W8 trace lowering. A reciprocal of a
+    // reduction still cannot be rewritten as an enclosing sum and must refuse.
     diffusion.primal.outputs[0].expression = scientia::TensorScalarExpr::Binary {
-        op: scientia::TensorBinaryOp::Add,
-        lhs: Box::new(reduced),
-        rhs: Box::new(scientia::TensorScalarExpr::Constant { value: 1.0 }),
+        op: scientia::TensorBinaryOp::Div,
+        lhs: Box::new(scientia::TensorScalarExpr::Constant { value: 1.0 }),
+        rhs: Box::new(reduced),
     };
     assert!(matches!(
         lower_operator_kernels(&factorization),

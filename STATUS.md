@@ -1,9 +1,9 @@
 # Scientia status
 
 Updated: 2026-09-08
-Branch: `master`, committed base `2871d959d0cfe4a09270523823e2da699b6b7ba4`.
-Milestone: W8 S-EVAL additive compiler prerequisite implemented in the working tree;
-Finitum functional execution and Sinbad consumption remain separate gates.
+Branch: `master`, committed base `d27780d`.
+Milestone: W8 compiled property input activity and tensor-trace point lowering;
+Sinbad consumer acceptance remains a separate gate.
 
 ## Ownership
 
@@ -60,7 +60,7 @@ Scientia contains no mesh, DOF, runtime solver or alternate scientific expressio
 - Finitum consumes `SysVarId`/`SysResId`; local symbols and declaration ids remain in origins.
   Sinbad owns declared case/run/verify trees, which Scientia parses without product semantics.
 
-## W8 S-EVAL: compiler-owned expressions (working tree)
+## W8 S-EVAL: compiler-owned expressions (`d27780d`)
 
 - Public `compile_point_expression(module, model, declaration, expression, domain)` and
   `compile_cell_functional(module, model, declaration_name)` produce
@@ -92,27 +92,33 @@ Scientia contains no mesh, DOF, runtime solver or alternate scientific expressio
   nested scalar and symmetric-gradient tensor constitutive expressions; provider argument
   forward/reverse chains, captured-data products, shared nested DAG and identity mutations.
 
+## W8 property activity and tensor trace (working tree)
+
+- `PropertyKernel::reads_input(name)` maps signature positions to generated primal operands
+  and delegates output-dependency analysis to Malleus. It distinguishes declared unused
+  arguments from actual reads, including through temporaries and multiple outputs. Invalid
+  kernel/signature mappings refuse; no symbolic interpretation or numerical execution occurs.
+- This derived query does not change property kernel artifacts or identities. Consumers must
+  require a tangent for actually read arguments; unused analytic-provided arguments are not
+  missing derivatives. Branch dependencies remain conservative; no cancellation proof.
+- `TensorTrace` lowers to a diagonal finite sum over its authored axes. Structured lowering
+  admits additive terms beside sums using positive-extent normalization, e.g.
+  `sum(f)+g = sum(f+g/n)`. This defines floating-point grouping for previously unsupported
+  point expressions; it is not a bitwise migration claim. No Malleus primitive or new IR added.
+- Hermetic corpus-17 stress fixture checks primal, state JVP and accumulated state VJP;
+  independent vector-gradient trace and additive/subtractive terms check dissimilar consumers.
+  Existing supported kernel paths remain unchanged.
+
 ## Validation
 
-Current W8 working tree:
-
-- `cargo check -q`: passed.
-- `cargo test -q --test w8_point_expression`: 10 passed.
-- `cargo test -q`: 186 passed (24 library, 162 integration). An initial full-suite
-  attempt hit `ExecutableFileBusy` in CLI tests during concurrent executable relinking;
-  the serial rerun passed without changing tests.
-- Clippy all targets with warnings denied, rustdoc with warnings denied, formatting
-  and diff checks passed.
-- Coordinator reran all seven integration binaries containing `SINBAD_WORKSPACE`
-  gates with `SINBAD_WORKSPACE=/projects/sinbad`: 42/42 passed, including complete
-  corpus slot derivation and implicit-system compilation, structure/verification,
-  factorization reporting, composition and derivative requests.
-
-Prior committed evidence (2026-09-03, not rerun counts for this working tree):
-
-- 176 tests passed (24 library, 152 integration); fmt, clippy and rustdoc passed.
-- Corpus: 50/50 elaborate; 97/128 factorizations after natural boundary/provider lifting.
-  Kernel-level SC-W1 evidence is described above; no product solve claim follows from it.
+- Focused property-kernel tests: 5 passed; point-expression tests: 13 passed.
+- `cargo test -q -p scientia`: 191 passed (26 library, 165 integration), none ignored.
+- Seven workspace-enabled suites with `SINBAD_WORKSPACE=/projects/sinbad`: 42 passed
+  (binding slots, operator structure, verification, facets, sign gauge, composition, derivatives).
+- All-target clippy and rustdoc with warnings denied, scoped formatting and diff checks passed.
+- The stale negative reduction-plus-constant test now probes reciprocal-of-reduction, which
+  remains unsupported; new additive tests establish the newly admitted behavior.
+- Input activity prerequisite: Malleus `02164b3`, public validated primal-output dependency query.
 
 ## Live dependency snapshot
 

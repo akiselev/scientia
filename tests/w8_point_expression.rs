@@ -500,3 +500,122 @@ fn support_and_nested_provider_provenance_are_checked() {
         semantic_arena_digest(&compilation.semantic)
     );
 }
+
+#[test]
+fn corpus_elastic_stress_trace_uses_tensor_reduction_with_exact_state_products() {
+    let source = include_str!("fixtures/17-linear-elasticity.res");
+    let compilation = model(source);
+    let m = &compilation.semantic.models[0];
+    let declaration = m.declarations.iter().find(|d| d.name == "stress").unwrap();
+    let SemanticDeclarationKind::ConstitutiveLaw { value } = declaration.kind else {
+        panic!()
+    };
+    let compiled = compile_point_expression(
+        &compilation.semantic,
+        &m.name,
+        declaration.id,
+        value,
+        m.domains[0].id,
+    )
+    .unwrap();
+    let node = &compiled.root;
+    let bundle = &node.kernels.bundles[0];
+    let inputs = bundle
+        .primal_inputs
+        .iter()
+        .map(|binding| {
+            let input = node.factorization.integrals[0]
+                .primal
+                .inputs
+                .iter()
+                .find(|i| i.id == binding.input)
+                .unwrap();
+            let value = if input.source == InputSourceRequirement::Basis {
+                vec![1., 0., 0., 0., 2., 0., 0., 0., 3.]
+            } else {
+                let capture = node.captures.iter().find(|c| c.input == input.id).unwrap();
+                match capture
+                    .provider
+                    .map(|p| m.providers[p.index()].name.as_str())
+                {
+                    Some("identity") => vec![1., 0., 0., 0., 1., 0., 0., 0., 1.],
+                    Some("lame_lambda") => vec![2.],
+                    Some("lame_mu") => vec![3.],
+                    other => panic!("unexpected capture {other:?}"),
+                }
+            };
+            (binding.operand, value)
+        })
+        .collect::<BTreeMap<_, _>>();
+    assert_eq!(
+        primal(node, &inputs),
+        vec![18., 0., 0., 0., 24., 0., 0., 0., 30.]
+    );
+    let mut seeded = inputs.clone();
+    for operand in &bundle.jvp.independent_operands {
+        seeded.insert(operand.derivative, vec![1., 0., 0., 0., 1., 0., 0., 0., 1.]);
+    }
+    let tangent = run(&bundle.module.kernels[bundle.jvp.kernel_index], &seeded)
+        [bundle.jvp.dependent_operands[0].derivative.index()]
+    .clone();
+    assert_eq!(tangent, vec![12., 0., 0., 0., 12., 0., 0., 0., 12.]);
+    let mut reverse = inputs;
+    reverse.insert(
+        bundle.vjp.dependent_operands[0].derivative,
+        vec![1., 0., 0., 0., 1., 0., 0., 0., 1.],
+    );
+    let reverse_values = run(&bundle.module.kernels[bundle.vjp.kernel_index], &reverse);
+    // Distinct indexing maps of the same tensor input have separate primal operands.
+    // Their covectors accumulate back to that shared semantic input.
+    let mut covector = vec![0.0; 9];
+    for operand in &bundle.vjp.independent_operands {
+        for (total, value) in covector
+            .iter_mut()
+            .zip(&reverse_values[operand.derivative.index()])
+        {
+            *total += value;
+        }
+    }
+    assert_eq!(covector, vec![12., 0., 0., 0., 12., 0., 0., 0., 12.]);
+}
+
+#[test]
+fn trace_functional_of_an_independent_vector_gradient_executes() {
+    let compilation = model(
+        r#"module trace_metric; model Flow {
+        domain body { dimension = 2; coordinates = cartesian; }
+        field v: unknown vector(2) H1(order=1) on body;
+        observable dilation { integrate(trace(grad(v))); }
+    }"#,
+    );
+    let compiled = compile_cell_functional(&compilation.semantic, "Flow", "dilation").unwrap();
+    let m = &compilation.semantic.models[0];
+    let supplied = values(
+        &compiled.root,
+        &BTreeMap::from([(symbol(m, "v"), vec![2., 7., 11., 3.])]),
+        0.,
+    );
+    assert_eq!(primal(&compiled.root, &supplied), vec![5.]);
+}
+
+#[test]
+fn tensor_trace_additive_hoisting_keeps_independent_terms_once() {
+    for (expression, expected) in [
+        ("7-trace(grad(v))", 2.0),
+        ("trace(grad(v))-7", -2.0),
+        ("trace(grad(v))+7", 12.0),
+    ] {
+        let source = format!(
+            "module additive; model Flow {{ domain body {{ dimension = 2; coordinates = cartesian; }} field v: unknown vector(2) H1(order=1) on body; observable metric {{ integrate({expression}); }} }}"
+        );
+        let compilation = model(&source);
+        let m = &compilation.semantic.models[0];
+        let compiled = compile_cell_functional(&compilation.semantic, "Flow", "metric").unwrap();
+        let supplied = values(
+            &compiled.root,
+            &BTreeMap::from([(symbol(m, "v"), vec![2., 7., 11., 3.])]),
+            0.,
+        );
+        assert_eq!(primal(&compiled.root, &supplied), vec![expected]);
+    }
+}

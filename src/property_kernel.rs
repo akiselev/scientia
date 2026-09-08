@@ -66,6 +66,47 @@ pub struct PropertyKernel {
     pub identity: Digest,
 }
 
+impl PropertyKernel {
+    /// Whether any final primal output depends on the named signature input. Declared but
+    /// unused inputs are false, even when they have no tangent contract. This queries the
+    /// validated generated IR, follows temporaries, and ignores dead assignments. Branches
+    /// are conservative; this does not prove algebraic cancellation or change kernel identity.
+    pub fn reads_input(&self, name: &str) -> Result<bool, PropertyKernelError> {
+        let invalid = |message: &str| PropertyKernelError::Unsupported(message.into());
+        let kernel = self
+            .module
+            .kernels
+            .get(self.value_kernel)
+            .ok_or_else(|| invalid("property value kernel index is invalid"))?;
+        if kernel.operands.len() < self.inputs.len()
+            || self
+                .inputs
+                .iter()
+                .enumerate()
+                .any(|(i, _)| kernel.operands[i].access != AccessMode::Read)
+        {
+            return Err(invalid(
+                "property signature does not match primal read operands",
+            ));
+        }
+        if self
+            .inputs
+            .iter()
+            .filter(|input| input.name == name)
+            .count()
+            > 1
+        {
+            return Err(invalid("property input name is ambiguous"));
+        }
+        let Some(index) = self.inputs.iter().position(|input| input.name == name) else {
+            malleus::validate(kernel.clone()).map_err(|error| invalid(&error.to_string()))?;
+            return Ok(false);
+        };
+        malleus::primal_output_reads_input(kernel, OperandId::new(index))
+            .map_err(|error| invalid(&error.to_string()))
+    }
+}
+
 #[derive(Debug, Error)]
 pub enum PropertyKernelError {
     #[error("PROPERTY_KERNEL_UNSUPPORTED: {0}")]
@@ -387,5 +428,67 @@ mod tests {
         });
         let err = lower_property_kernel(&def, &UnitRegistry::si_bootstrap()).unwrap_err();
         assert!(matches!(err, PropertyKernelError::Unsupported(_)));
+    }
+
+    #[test]
+    fn reads_input_distinguishes_unused_analytic_signature_from_primal_dependency() {
+        let mut def = definition(DerivativeContract::AnalyticProvided, "2");
+        def.signature.inputs[0].name = "t".into();
+        let constant = lower_property_kernel(&def, &UnitRegistry::si_bootstrap()).unwrap();
+        assert!(constant.tangents.is_empty());
+        assert!(!constant.reads_input("t").unwrap());
+        assert!(!constant.reads_input("unknown").unwrap());
+        let identity = constant.identity.clone();
+        assert!(!constant.reads_input("t").unwrap());
+        assert_eq!(constant.identity, identity);
+        def.model = PropertyModel::Expression(crate::scientific::parse_expression("2*t").unwrap());
+        let active = lower_property_kernel(&def, &UnitRegistry::si_bootstrap()).unwrap();
+        assert!(active.reads_input("t").unwrap());
+        assert!(active.tangents.is_empty());
+    }
+
+    #[test]
+    fn reads_input_tracks_live_temporaries_and_every_output_not_dead_operations() {
+        use malleus::{LocalId, ScalarExpr};
+        let mut def = definition(DerivativeContract::AnalyticProvided, "2");
+        let mut second = def.signature.inputs[0].clone();
+        second.name = "s".into();
+        def.signature.inputs.push(second);
+        let mut kernel = lower_property_kernel(&def, &UnitRegistry::si_bootstrap()).unwrap();
+        let primal = &mut kernel.module.kernels[kernel.value_kernel];
+        primal.body.statements = vec![
+            Statement::Let {
+                local: LocalId::new(0),
+                value: ScalarExpr::Load(OperandId::new(0)),
+            },
+            Statement::Let {
+                local: LocalId::new(1),
+                value: ScalarExpr::Load(OperandId::new(1)),
+            },
+            Statement::Let {
+                local: LocalId::new(2),
+                value: ScalarExpr::Local(LocalId::new(1)),
+            },
+            Statement::Store {
+                operand: OperandId::new(2),
+                value: ScalarExpr::Local(LocalId::new(2)),
+            },
+        ];
+        assert!(!kernel.reads_input("T").unwrap());
+        assert!(kernel.reads_input("s").unwrap());
+        let primal = &mut kernel.module.kernels[kernel.value_kernel];
+        primal
+            .operands
+            .push(KernelOperand::scalar("second", AccessMode::Write));
+        primal
+            .indexing_maps
+            .push(IndexingMap::scalar(OperandId::new(3)));
+        primal.body.statements.push(Statement::Store {
+            operand: OperandId::new(3),
+            value: ScalarExpr::Local(LocalId::new(0)),
+        });
+        assert!(kernel.reads_input("T").unwrap());
+        kernel.value_kernel = usize::MAX;
+        assert!(kernel.reads_input("T").is_err());
     }
 }

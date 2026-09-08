@@ -1599,6 +1599,38 @@ impl Lowerer<'_> {
                 }
                 Ok(result)
             }
+            SemanticExprKind::TensorTrace { value, axes } => {
+                let shape = self.shape(value, context)?;
+                let left = axes.lhs as usize;
+                let right = axes.rhs as usize;
+                if left == right
+                    || left >= shape.len()
+                    || right >= shape.len()
+                    || shape[left] != shape[right]
+                    || shape.len() != indices.len() + 2
+                {
+                    return Err(TensorCompileError::Shape(format!(
+                        "invalid tensor trace axes or output rank at {id}"
+                    )));
+                }
+                let axis = self.axis(shape[left], TensorAxisRole::Reduction);
+                let mut free = indices.iter().copied();
+                let operand_indices = (0..shape.len())
+                    .map(|position| {
+                        if position == left || position == right {
+                            axis.id
+                        } else {
+                            free.next().expect("validated trace rank")
+                        }
+                    })
+                    .collect::<Vec<_>>();
+                let expression = self.lower(value, &operand_indices, context)?;
+                Ok(TensorScalarExpr::Reduction {
+                    op: TensorReductionOp::Sum,
+                    axis,
+                    expression: Box::new(expression),
+                })
+            }
             SemanticExprKind::FacetTrace { value, side } => self.lower(
                 value,
                 indices,
@@ -1665,7 +1697,6 @@ impl Lowerer<'_> {
             // (GX-A2/A3, not implemented here); it still refuses cleanly rather than
             // attempting kernel lowering.
             SemanticExprKind::ProviderCall { .. }
-            | SemanticExprKind::TensorTrace { .. }
             | SemanticExprKind::Conjugate { .. }
             | SemanticExprKind::Index { .. }
             | SemanticExprKind::Vector { .. }

@@ -568,7 +568,10 @@ fn insert_axis(
 /// Sum distributivity: `a * Σ_i f` is `Σ_i a * f` when `a` does not reference axis `i` (and
 /// likewise for `Σ_i f * a`, `-Σ_i f`, and `Σ_i f / a`), so a point function whose reduction
 /// sits inside a product (an output kernel `σ · |∇V|²`, SC-W1) lowers through the same
-/// enclosing-nest rule as a residual output. Applied bottom-up; nothing else is rewritten.
+/// enclosing-nest rule as a residual output. For positive finite extent n, additive terms
+/// normalize the independent summand: `Σ_i f + g = Σ_i (f + g/n)` (and subtraction).
+/// This introduces a defined floating-point grouping for previously unsupported expressions.
+/// Applied bottom-up; no algebraic cancellation is inferred.
 fn hoist_reductions(expression: &TensorScalarExpr) -> TensorScalarExpr {
     fn references_axis(expression: &TensorScalarExpr, axis: TensorAxisId) -> bool {
         match expression {
@@ -616,6 +619,59 @@ fn hoist_reductions(expression: &TensorScalarExpr) -> TensorScalarExpr {
             let lhs = hoist_reductions(lhs);
             let rhs = hoist_reductions(rhs);
             match (op, lhs, rhs) {
+                // Broadcast an independent additive term across a finite sum without
+                // multiplying its contribution by the reduction extent.
+                (
+                    TensorBinaryOp::Add | TensorBinaryOp::Sub,
+                    TensorScalarExpr::Reduction {
+                        op: reduction,
+                        axis,
+                        expression,
+                    },
+                    other,
+                ) if axis.extent > 0 && !references_axis(&other, axis.id) => {
+                    TensorScalarExpr::Reduction {
+                        op: reduction,
+                        axis,
+                        expression: Box::new(hoist_reductions(&TensorScalarExpr::Binary {
+                            op: *op,
+                            lhs: expression,
+                            rhs: Box::new(TensorScalarExpr::Binary {
+                                op: TensorBinaryOp::Div,
+                                lhs: Box::new(other),
+                                rhs: Box::new(TensorScalarExpr::Constant {
+                                    value: axis.extent as f64,
+                                }),
+                            }),
+                        })),
+                    }
+                }
+                (
+                    TensorBinaryOp::Add | TensorBinaryOp::Sub,
+                    other,
+                    TensorScalarExpr::Reduction {
+                        op: reduction,
+                        axis,
+                        expression,
+                    },
+                ) if axis.extent > 0 && !references_axis(&other, axis.id) => {
+                    TensorScalarExpr::Reduction {
+                        op: reduction,
+                        axis,
+                        expression: Box::new(hoist_reductions(&TensorScalarExpr::Binary {
+                            op: *op,
+                            lhs: Box::new(TensorScalarExpr::Binary {
+                                op: TensorBinaryOp::Div,
+                                lhs: Box::new(other),
+                                rhs: Box::new(TensorScalarExpr::Constant {
+                                    value: axis.extent as f64,
+                                }),
+                            }),
+                            rhs: expression,
+                        })),
+                    }
+                }
+
                 (
                     TensorBinaryOp::Mul,
                     TensorScalarExpr::Reduction {
