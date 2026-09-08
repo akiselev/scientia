@@ -536,7 +536,33 @@ pub fn derive_output_form(
     let SemanticDeclarationKind::Output { value, domain } = output.kind else {
         unreachable!("output declaration was selected above")
     };
+    derive_point_form(module, model, output, value, domain, false)
+}
+
+/// Shared output/point-expression lowering. Expanded definitions remain in the form arena;
+/// the canonical semantic module is never changed.
+pub(crate) fn derive_point_form(
+    module: &SemanticModule,
+    model: &SemanticModel,
+    output: &crate::semantic::SemanticDeclaration,
+    value: ExprId,
+    domain: DomainId,
+    expand: bool,
+) -> Result<VariationalForm, FormCompileError> {
+    let output_name = &output.name;
     let mut arena = FormArena::new(model.expressions.to_vec());
+    let source_value = value;
+    let value = if expand {
+        expand_point_definitions(
+            model,
+            &mut arena,
+            value,
+            &mut BTreeSet::new(),
+            &mut std::collections::BTreeMap::new(),
+        )?
+    } else {
+        value
+    };
     let argument_symbol = SymbolId::generated_for(output.id);
     let mut argument_type = arena.expressions[value.index()].ty.clone();
     argument_type.role = SemanticRole::PhysicalField(FieldRole::Test);
@@ -551,7 +577,16 @@ pub fn derive_output_form(
         output.span,
     );
     let mut lifted_captures: Vec<FormCapture> = vec![];
-    let term = lift_provider_calls(&mut arena, value, &mut lifted_captures)?;
+    let term = if expand {
+        lift_point_provider_calls(
+            &mut arena,
+            value,
+            &mut lifted_captures,
+            &mut std::collections::BTreeMap::new(),
+        )?
+    } else {
+        lift_provider_calls(&mut arena, value, &mut lifted_captures)?
+    };
     arena.refine_deferred_shape(term, argument_type.shape.clone());
     let cell = arena.pair(term, argument_expr, output.span)?;
     let integrals = vec![VariationalIntegral {
@@ -567,7 +602,7 @@ pub fn derive_output_form(
     let mut fields = BTreeSet::new();
     collect_transitive_fields(
         model,
-        value,
+        source_value,
         &mut BTreeSet::new(),
         &mut BTreeSet::new(),
         &mut fields,
@@ -628,7 +663,11 @@ pub fn derive_output_form(
         assumptions: vec![],
         boundary_terms: vec![],
     };
-    let name = format!("{output_name}::output");
+    let name = if expand {
+        format!("{output_name}::point_{}", source_value.index())
+    } else {
+        format!("{output_name}::output")
+    };
     let arity = FormArity { test: 1, trial: 0 };
     validate_form_sides(&name, &arena.expressions, &integrals)?;
     let artifact_digest = span_independent_digest(&FormDigestPayload {
@@ -1462,6 +1501,55 @@ fn derive_boundary_terms(
 /// scalar; a vector-valued call (`convect(u, u)`) stays a frozen coefficient, named truthfully
 /// in the derivative receipt. Ancestors of a lifted call are rebuilt as new arena nodes; no
 /// pre-existing node is mutated, so every `definition` id still addresses the model arena.
+/// Inline authored definitions, but keep provider calls at their original expression ids.
+/// Their argument expressions are independently compiled by the point-expression API.
+fn expand_point_definitions(
+    model: &SemanticModel,
+    arena: &mut FormArena,
+    id: ExprId,
+    stack: &mut BTreeSet<ExprId>,
+    memo: &mut std::collections::BTreeMap<ExprId, ExprId>,
+) -> Result<ExprId, FormCompileError> {
+    if let Some(expanded) = memo.get(&id) {
+        return Ok(*expanded);
+    }
+    if !stack.insert(id) {
+        return Err(FormCompileError::InvalidExpression(id));
+    }
+    let expression = arena
+        .expressions
+        .get(id.index())
+        .ok_or(FormCompileError::InvalidExpression(id))?
+        .clone();
+    let result = if let SemanticExprKind::Symbol { symbol } = expression.kind {
+        if let Some(value) = crate::point_expression::symbol_definition(model, symbol) {
+            expand_point_definitions(model, arena, value, stack, memo)?
+        } else {
+            id
+        }
+    } else if matches!(expression.kind, SemanticExprKind::ProviderCall { .. }) {
+        id
+    } else {
+        let children = expression_children(&expression.kind);
+        let expanded = children
+            .iter()
+            .map(|child| expand_point_definitions(model, arena, *child, stack, memo))
+            .collect::<Result<Vec<_>, _>>()?;
+        if expanded == children {
+            id
+        } else {
+            arena.push(
+                replace_children(&expression.kind, &expanded),
+                expression.ty,
+                expression.span,
+            )
+        }
+    };
+    stack.remove(&id);
+    memo.insert(id, result);
+    Ok(result)
+}
+
 fn lift_provider_calls(
     arena: &mut FormArena,
     id: ExprId,
@@ -1499,6 +1587,54 @@ fn lift_provider_calls(
     }
     let kind = replace_children(&expression.kind, &lifted);
     Ok(arena.push(kind, expression.ty, expression.span))
+}
+
+fn lift_point_provider_calls(
+    arena: &mut FormArena,
+    id: ExprId,
+    captures: &mut Vec<FormCapture>,
+    memo: &mut std::collections::BTreeMap<ExprId, ExprId>,
+) -> Result<ExprId, FormCompileError> {
+    if let Some(lifted) = memo.get(&id) {
+        return Ok(*lifted);
+    }
+    let expression = arena
+        .expressions
+        .get(id.index())
+        .ok_or(FormCompileError::InvalidExpression(id))?
+        .clone();
+    if let SemanticExprKind::ProviderCall { .. } = expression.kind {
+        let symbol = SymbolId::generated_for_expression(id);
+        let mut ty = expression.ty.clone();
+        ty.role = SemanticRole::Property;
+        if !captures.iter().any(|capture| capture.symbol == symbol) {
+            captures.push(FormCapture {
+                symbol,
+                role: FormCaptureRole::Property,
+                ty: ty.clone(),
+                domain: None,
+                space: None,
+                source_span: expression.span,
+                definition: Some(id),
+            });
+        }
+        let lifted = arena.push(SemanticExprKind::Symbol { symbol }, ty, expression.span);
+        memo.insert(id, lifted);
+        return Ok(lifted);
+    }
+    let children = expression_children(&expression.kind);
+    let mut lifted = Vec::with_capacity(children.len());
+    for child in &children {
+        lifted.push(lift_point_provider_calls(arena, *child, captures, memo)?);
+    }
+    if lifted == children {
+        memo.insert(id, id);
+        return Ok(id);
+    }
+    let kind = replace_children(&expression.kind, &lifted);
+    let lifted = arena.push(kind, expression.ty, expression.span);
+    memo.insert(id, lifted);
+    Ok(lifted)
 }
 
 /// Rebuild `kind` with its children (in [`expression_children`] order) replaced by `children`.
@@ -2042,7 +2178,7 @@ fn validate_expression_side(
     Ok(())
 }
 
-fn expression_children(kind: &SemanticExprKind) -> Vec<ExprId> {
+pub(crate) fn expression_children(kind: &SemanticExprKind) -> Vec<ExprId> {
     match kind {
         SemanticExprKind::Unary { arg, .. }
         | SemanticExprKind::Differential { arg, .. }

@@ -16,6 +16,7 @@ pub mod id;
 pub mod kernel;
 pub mod method;
 pub mod objective;
+pub mod point_expression;
 pub mod projection;
 pub mod property_kernel;
 pub mod property_tensor;
@@ -181,4 +182,10 @@ pub use verification::{
     VERIFICATION_OBLIGATION_SCHEMA, VERIFICATION_PROFILE_SCHEMA, ValidityCondition,
     VerificationEvidenceClass, VerificationObligation, VerificationObligationKind,
     VerificationProfile, VerificationProfileError, derive_verification_profiles,
+};
+
+pub use point_expression::{
+    POINT_EXPRESSION_KERNELS_SCHEMA, PointCapture, PointCaptureDisposition, PointExpressionError,
+    PointExpressionKernels, PointExpressionNode, PolynomialDegreeBindings, compile_cell_functional,
+    compile_point_expression, infer_expression_polynomial_degree,
 };
