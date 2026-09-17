@@ -1,0 +1,387 @@
+   Compiling scientia v0.1.0 (/projects/sinbad/scientia)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2m 04s
+     Running unittests src/lib.rs (/projects/sinbad/.show-build/debug/deps/scientia-6b83c4d1a07758c3)
+
+running 26 tests
+test projection::tests::comparisons_are_refused_not_zeroed ... ok
+test projection::tests::differentiate_matches_finite_difference ... ok
+test property_tensor::tests::isotropic_tensor_is_rotation_invariant ... ok
+test property_tensor::tests::orthotropic_tensor_rotates_axes_and_creates_cross_term ... ok
+test projection::tests::simplify_folds_constant_arithmetic ... ok
+test projection::tests::substitute_replaces_every_occurrence ... ok
+test structural::dae::tests::detects_alias_class ... ok
+test scientific::tests::parses_structured_heat_source ... ok
+test structural::scc::tests::components_are_reverse_topological ... ok
+test structural::dae::tests::hidden_constraint_requests_differentiation ... ok
+test structural::schedule::tests::coupled_solver_can_keep_raw_algebraic_loop ... ok
+test scientific::tests::authored_symbols_resolve_through_quantitas ... ok
+test structural::schedule::tests::lower_triangular_chain_is_explicit_in_order ... ok
+test structural::schedule::tests::dense_loop_is_torn_deterministically ... ok
+test property_kernel::tests::reads_input_tracks_live_temporaries_and_every_output_not_dead_operations ... ok
+test structural::schedule::tests::structural_singularity_reports_unmatched_rows_and_columns ... ok
+test structural::schedule::tests::rlc_shape_has_explicit_loop_explicit_blocks ... ok
+test property_kernel::tests::table_and_external_models_are_refused_not_silently_skipped ... ok
+test kernel::tests::scalar_form_integrand_preserves_roles_and_lowers_to_valid_malleus_ir ... ok
+test formulation::tests::authored_form_uses_typed_arena_identities_and_roles ... ok
+test kernel::tests::differential_requirements_are_typed_but_not_smuggled_into_scalar_ir ... ok
+test projection::tests::manufactured_forcing_expands_dt_and_div_grad_of_the_exact_solution ... ok
+test property_kernel::tests::analytic_provided_property_gets_no_tangent_kernel ... ok
+test property_kernel::tests::symbolic_property_gets_a_value_kernel_and_one_tangent_per_input ... ok
+test property_kernel::tests::reads_input_distinguishes_unused_analytic_signature_from_primal_dependency ... ok
+test structural::scc::tests::deep_chain_is_iterative_and_deterministic ... ok
+
+test result: ok. 26 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running unittests src/bin/scientia.rs (/projects/sinbad/.show-build/debug/deps/scientia-6ed0031bb04313ee)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/binding_slots.rs (/projects/sinbad/.show-build/debug/deps/binding_slots-587db26ccbe988fa)
+
+running 4 tests
+test derive_binding_slots_succeeds_for_the_complete_sinbad_corpus ... ok
+test worked_example_c2_2_against_the_sinbad_corpus_file ... ok
+test declared_providers_become_required_slots_with_typed_inputs ... ok
+test worked_example_c2_2_local_copy_has_four_unbound_providers ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/cli_models.rs (/projects/sinbad/.show-build/debug/deps/cli_models-fe529719f6df9c8c)
+
+running 2 tests
+test model_qualified_selectors_address_every_model_aware_command ... ok
+test system_command_compiles_declared_and_implicit_systems ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.28s
+
+     Running tests/coupling_analysis.rs (/projects/sinbad/.show-build/debug/deps/coupling_analysis-13efb62c3ba5e98d)
+
+running 3 tests
+test nested_property_and_constitutive_dependencies_reach_cross_blocks ... ok
+test structural_incidence_agrees_with_transitive_coupling_dependencies ... ok
+test declaration_reordering_preserves_semantic_digest_and_coupling_graph ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/fc10_methods.rs (/projects/sinbad/.show-build/debug/deps/fc10_methods-788f2bb7640d8893)
+
+running 4 tests
+test compilers_refuse_wrong_method_domains_and_invalid_stencils ... ok
+test complete_method_program_round_trips_with_its_malleus_module ... ok
+test fv_and_fd_affine_kernels_execute_with_malleus_reference_semantics ... ok
+test five_sibling_compilers_produce_distinct_nonvariational_artifacts ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
+
+     Running tests/fc8_system.rs (/projects/sinbad/.show-build/debug/deps/fc8_system-bea993a0beca6d8e)
+
+running 3 tests
+test dg_two_sided_traces_lower_through_the_same_tensor_and_kernel_contracts ... ok
+test complete_operator_system_round_trips_with_every_compiler_stage ... ok
+test mixed_gate_models_compile_complete_block_kernel_chains ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.42s
+
+     Running tests/form_pipeline.rs (/projects/sinbad/.show-build/debug/deps/form_pipeline-7f3b7746b173e7de)
+
+running 15 tests
+test invalid_derived_differential_shape_is_diagnosed ... ok
+test jump_and_average_are_deterministic_two_sided_operations ... ok
+test facet_measures_resolve_to_region_ids ... ok
+test duplicate_neumann_substitution_is_refused ... ok
+test interpreter_evaluates_derived_poisson_form_from_independent_point_data ... ok
+test neumann_data_is_substituted_with_a_digest_linked_boundary_receipt ... ok
+test deterministic_form_interpreter_evaluates_scalar_and_contraction_forms ... ok
+test presentation_changes_do_not_change_form_or_program_digests ... ok
+test interpreter_requirements_are_available_without_walking_the_arena ... ok
+test two_sided_facets_require_explicit_trace_sides ... ok
+test poisson_derivation_records_ibp_and_eliminated_boundary_term ... ok
+test interface_point_and_conjugation_semantics_are_explicit ... ok
+test typed_identities_and_roles_survive_form_factorization ... ok
+test zero_rhs_does_not_create_a_degenerate_integral ... ok
+test fc2_gate_models_derive_typed_forms_or_explicit_equation_forms ... ok
+
+test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.08s
+
+     Running tests/form_requirements.rs (/projects/sinbad/.show-build/debug/deps/form_requirements-06c293967c44a0a9)
+
+running 11 tests
+test normal_trace_of_hcurl_is_refused ... ok
+test coefficient_dependent_quadrature_is_not_claimed_exact ... ok
+test preprocessing_and_quadrature_intent_are_explicit ... ok
+test derived_poisson_emits_essential_constraints_and_boundary_partition ... ok
+test hdiv_normal_preprocessing_names_normal_trace_and_geometry ... ok
+test fc3_models_product_h1_l2_dg_hcurl_hdiv_and_trace_requirements ... ok
+test requirement_identity_is_invariant_to_domain_and_field_declaration_order ... ok
+test incompatible_spaces_axes_measures_and_boundary_data_are_refused ... ok
+test constitutive_chains_expose_state_spaces_and_model_defined_inputs ... ok
+test integral_grouping_is_complete_and_invariant_to_integral_order ... ok
+test fc3_gate_forms_all_infer_mesh_free_requirements ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.09s
+
+     Running tests/gx_a1_providers.rs (/projects/sinbad/.show-build/debug/deps/gx_a1_providers-187a46750fcee110)
+
+running 8 tests
+test provider_declarations_parse_with_and_without_a_body ... ok
+test provider_formatting_round_trips_and_is_idempotent ... ok
+test a_provider_cannot_reuse_an_intrinsic_name ... ok
+test calls_to_undeclared_providers_still_elaborate_with_an_advisory ... ok
+test declared_provider_calls_elaborate_to_typed_provider_call_nodes ... ok
+test provider_arity_mismatch_is_a_typed_error ... ok
+test provider_selector_input_requires_an_integer_literal ... ok
+test provider_input_dimension_mismatch_is_a_typed_error ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/gx_a3_property_chain_rule.rs (/projects/sinbad/.show-build/debug/deps/gx_a3_property_chain_rule-b7ee204745521f92)
+
+running 1 test
+test jvp_inlines_the_symbolic_provider_and_matches_a_finite_difference ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running tests/gx_a4_structure.rs (/projects/sinbad/.show-build/debug/deps/gx_a4_structure-4fbc97aa273de2cc)
+
+running 6 tests
+test sinbad_saddle_point_corpus_models_derive_structure_and_inf_sup_obligations ... ok
+test asymmetric_advection_fixture_is_never_reported_symmetric ... ok
+test nonlinear_provider_wrapped_fixture_is_nonlinear_with_property_dependence_recorded ... ok
+test poisson_like_fixture_without_a_dirichlet_condition_has_a_constant_nullspace_candidate ... ok
+test poisson_like_fixture_is_symmetric_and_linear_with_dirichlet_removing_the_nullspace ... ok
+test stokes_shape_mixed_fixture_is_a_saddle_point_with_a_pressure_nullspace_candidate ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+
+     Running tests/gx_a5_verification.rs (/projects/sinbad/.show-build/debug/deps/gx_a5_verification-a2e19400d66174c1)
+
+running 10 tests
+test corpus_sweep_reports_remaining_unsupported_standard_annotations ... ok
+test schema_is_bumped_to_version_two ... ok
+test a_bare_conservation_annotation_stays_an_explicit_refusal_not_a_guess ... ok
+test shock_tube_has_no_safe_generator_and_stays_unsupported ... ok
+test mms_with_no_authored_exact_expression_yields_a_provider_slot ... ok
+test inf_sup_annotation_carries_the_declared_pairing ... ok
+test patch_test_and_rigid_body_modes_resolve_the_companion_field ... ok
+test conservation_with_an_explicit_quantity_argument_is_typed ... ok
+test jvp_taylor_annotation_produces_a_named_derivative_taylor_obligation ... ok
+test spatial_and_temporal_convergence_annotations_use_the_sole_state_field_and_declared_order ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+     Running tests/gx_a6_natural_boundary.rs (/projects/sinbad/.show-build/debug/deps/gx_a6_natural_boundary-97c8aab00d6f4e26)
+
+running 2 tests
+test a_region_named_only_by_a_form_measure_inherits_the_forms_cell_domain ... ok
+test integration_by_parts_synthesizes_the_implicit_whole_boundary_region ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/gx_f3_registry_units.rs (/projects/sinbad/.show-build/debug/deps/gx_f3_registry_units-ed297ebf99b52bea)
+
+running 9 tests
+test property_kernel_constant_with_a_compound_unit_canonicalizes_to_si ... ok
+test unknown_quantity_kind_is_an_error_on_a_provider_input ... ok
+test unknown_quantity_kind_is_an_error_on_a_provider_output ... ok
+test provider_input_kind_is_now_checked_for_a_non_temperature_kind ... ok
+test compound_unit_resolves_on_a_field_unit_attribute ... ok
+test unresolvable_literal_unit_is_reported_and_does_not_scale ... ok
+test unit_bearing_literals_canonicalize_to_si_during_elaboration ... ok
+test unknown_quantity_kind_is_only_advisory_on_source_field_and_parameter_attributes ... ok
+test compound_unit_resolves_on_a_provider_output_attribute ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/gx_f4_module_resolution.rs (/projects/sinbad/.show-build/debug/deps/gx_f4_module_resolution-ccce2cc3fbeff158)
+
+running 7 tests
+test a_missing_imported_module_is_refused ... ok
+test an_import_cycle_is_refused ... ok
+test a_local_provider_that_shadows_an_imported_one_is_a_cross_module_duplicate ... ok
+test no_imports_refuses_any_use_import_for_a_hermetic_caller ... ok
+test no_imports_still_elaborates_a_model_with_no_use_statement ... ok
+test filesystem_module_source_maps_a_dotted_name_to_a_nested_res_file ... ok
+test imported_provider_becomes_a_required_slot_with_typed_inputs ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running tests/gx_facet_boundary.rs (/projects/sinbad/.show-build/debug/deps/gx_facet_boundary-780faf710398f9ca)
+
+running 3 tests
+test corpus_sweep_reports_operator_factorization_counts ... ok
+test a_provider_call_nested_inside_a_compound_boundary_expression_lifts_too ... ok
+test facet_provider_call_becomes_an_external_input_and_evaluates_correctly ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+
+     Running tests/one_dimensional_divergence.rs (/projects/sinbad/.show-build/debug/deps/one_dimensional_divergence-ac81269b2270d8bc)
+
+running 1 test
+test one_dimensional_divergence_of_a_declared_flux_elaborates_to_a_scalar_row ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running tests/p_natural_closure.rs (/projects/sinbad/.show-build/debug/deps/p_natural_closure-11c03190c01ff79b)
+
+running 5 tests
+test an_inline_normal_trace_of_a_computed_vector_is_refused_typed ... ok
+test a_named_flux_under_a_normal_trace_leaves_its_definition_leaves_as_plain_traces ... ok
+test constitutive_flux_with_no_boundary_condition_is_naturally_closed_and_factors ... ok
+test an_inline_normal_component_maps_only_the_axis_carrying_operand ... ok
+test provider_calls_inside_residual_terms_are_lifted_into_property_captures ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+
+     Running tests/sc_sign_gauge.rs (/projects/sinbad/.show-build/debug/deps/sc_sign_gauge-fb448d303fbeda91)
+
+running 5 tests
+test sinbad_corpus_darcy_gauges_and_stokes_reports_the_opaque_momentum_block ... ok
+test one_sided_coupling_has_no_gauge_and_says_why ... ok
+test convective_diagonal_block_has_no_gauge_and_says_why ... ok
+test gauge_is_part_of_the_identity_and_round_trips ... ok
+test mixed_darcy_gauge_flips_the_pressure_row ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.08s
+
+     Running tests/sc_slots_inputs.rs (/projects/sinbad/.show-build/debug/deps/sc_slots_inputs-97bc1d0967a987b5)
+
+running 4 tests
+test input_declarations_format_idempotently_and_refuse_definitions ... ok
+test input_is_a_soft_keyword ... ok
+test defined_sources_are_model_defined_and_inputs_are_required_slots ... ok
+test source_locator_carries_the_module_digest ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running tests/sc_w1_composition.rs (/projects/sinbad/.show-build/debug/deps/sc_w1_composition-95737353105d6484)
+
+running 9 tests
+test sinbad_corpus_models_are_implicit_one_instance_systems ... ok
+test system_grammar_formats_idempotently ... ok
+test module_closure_is_ordered_and_imports_resolve_by_reference ... ok
+test model_direct_and_implicit_system_agree_byte_for_byte ... ok
+test two_instances_of_one_model_share_artifacts_and_prefix_slots ... ok
+test dropping_a_bind_opens_the_input_and_rebinding_makes_a_dag ... ok
+test composed_joule_chain_matches_monolithic_08_kernel_at_sampled_states ... ok
+test bind_and_instance_refusals_are_typed ... ok
+test composed_electrothermal_lowers_binds_onto_kernel_compositions ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.44s
+
+     Running tests/sc_w2_ports.rs (/projects/sinbad/.show-build/debug/deps/sc_w2_ports-6545222f22956621)
+
+running 2 tests
+test typed_connection_relations_retain_source_orientation_and_roundtrip ... ok
+test missing_closures_wrong_types_orientation_and_domain_relations_refuse ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.09s
+
+     Running tests/scientific_language.rs (/projects/sinbad/.show-build/debug/deps/scientific_language-da7f475cb621a0bf)
+
+running 4 tests
+test declaration_order_does_not_change_coupling_dependencies ... ok
+test generated_corpus_has_fifty_invalid_modules ... ok
+test formatting_is_idempotent_and_semantics_stable ... ok
+test generated_corpus_has_fifty_valid_modules ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/semantic_elaboration.rs (/projects/sinbad/.show-build/debug/deps/semantic_elaboration-60e3ca3ff974a392)
+
+running 6 tests
+test module_resolution_is_deterministic_and_reports_the_import_span ... ok
+test elaboration_resolves_roles_domains_types_and_expression_identities ... ok
+test malformed_unit_and_quantity_kind_point_at_authored_tokens ... ok
+test malformed_roles_names_axes_and_frames_have_stable_precise_diagnostics ... ok
+test role_and_frame_mismatches_are_not_silently_coerced ... ok
+test elaboration_is_deterministic_across_presentation_changes ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running tests/source_semantics.rs (/projects/sinbad/.show-build/debug/deps/source_semantics-c6e801ded7f21184)
+
+running 3 tests
+test every_current_semantic_declaration_has_a_nonempty_source_span ... ok
+test format_roundtrip_preserves_all_current_scientific_semantics ... ok
+test whitespace_and_comments_do_not_change_semantic_digest ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/structural_matching.rs (/projects/sinbad/.show-build/debug/deps/structural_matching-bc288b51341c79be)
+
+running 5 tests
+test lower_triangular_chain_is_all_explicit ... ok
+test structurally_singular_system_reports_both_sides ... ok
+test two_by_two_loop_tears_one_variable_and_preserves_untorn_block ... ok
+test structural_results_are_deterministic ... ok
+test matching_agrees_with_exhaustive_reference_on_all_three_by_three_graphs ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/structured_kernels.rs (/projects/sinbad/.show-build/debug/deps/structured_kernels-3c1f2a6872f155c7)
+
+running 5 tests
+test poisson_malleus_kernels_match_analytic_tensors_on_multiple_geometries ... ok
+test complete_structured_kernel_bundle_round_trips_and_revalidates ... ok
+test fc5_lowers_complete_validated_malleus_bundles_and_matches_fc4_jvp ... ok
+test generated_vjp_and_parameter_kernels_pass_adjoint_and_finite_difference_checks ... ok
+test malformed_fc4_shapes_and_derivative_receipts_are_refused ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.11s
+
+     Running tests/sv0_verification.rs (/projects/sinbad/.show-build/debug/deps/sv0_verification-3e9eb4e680d3a2ac)
+
+running 4 tests
+test derivative_requests_refuse_unbound_colliding_and_incomplete_namespaces ... ok
+test shape_requests_require_an_active_design_variable ... ok
+test shape_request_requires_revision_stratum_boundaries_and_matching_disposition ... ok
+test poisson_obligations_are_deterministic_across_declaration_order ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running tests/sv1_a_derivative_request.rs (/projects/sinbad/.show-build/debug/deps/sv1_a_derivative_request-44583ccdd52b713d)
+
+running 5 tests
+test sinbad_corpus_poisson_energy_is_a_measurable_objective_in_the_conductivity_slot ... ok
+test objective_grammar_formats_idempotently_and_refuses_a_missing_sense ... ok
+test controls_and_frozen_inputs_partition_the_request ... ok
+test inverse_poisson_conductivity_gradient_request_is_linked_and_typed ... ok
+test refusals_are_typed_and_name_the_case_slot_behind_a_model_defined_property ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.10s
+
+     Running tests/tensor_factorization.rs (/projects/sinbad/.show-build/debug/deps/tensor_factorization-0ab0b6fa7a5f79e7)
+
+running 8 tests
+test malformed_derivative_shapes_and_active_sources_are_refused ... ok
+test contraction_rank_mismatch_is_a_typed_refusal_not_a_panic ... ok
+test scalar_source_dual_keeps_explicit_negative_sign ... ok
+test interpreter_refuses_a_malformed_non_basis_active_artifact ... ok
+test independent_p1_triangle_fixture_validates_poisson_residual_and_jvp ... ok
+test fc4_emits_explicit_indexed_qfunctions_and_operator_stages ... ok
+test shape_lookup_is_keyed_by_evaluation_not_requirement_order ... ok
+test tensor_program_digest_is_presentation_invariant ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
+
+     Running tests/w8_point_expression.rs (/projects/sinbad/.show-build/debug/deps/w8_point_expression-01854f15d3838b90)
+
+running 13 tests
+test trace_functional_of_an_independent_vector_gradient_executes ... ok
+test unsupported_functionals_and_unavailable_provider_products_refuse ... ok
+test tensor_constitutive_definitions_inline_without_frozen_inputs ... ok
+test elasticity_vector_norm_uses_generated_state_covectors ... ok
+test objective_primal_state_and_capture_products_are_executable ... ok
+test spatial_degree_never_guesses_unbound_data_or_coordinate_names ... ok
+test tensor_trace_additive_hoisting_keeps_independent_terms_once ... ok
+test polynomial_degree_is_conservative_and_identity_binds_origin ... ok
+test provider_argument_dag_and_nested_constitutive_chain_are_explicit ... ok
+test support_and_nested_provider_provenance_are_checked ... ok
+test corpus_elastic_stress_trace_uses_tensor_reduction_with_exact_state_products ... ok
+test identity_covers_capture_contract_support_and_executable_payload ... ok
+test provider_chain_reverse_product_and_nested_dag_are_complete ... ok
+
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.29s
+

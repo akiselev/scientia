@@ -1121,6 +1121,7 @@ mod tests {
         let mut expressions = Vec::new();
         let id = lift_standalone_expr(&expr, &inputs, &mut symbols, &mut expressions).unwrap();
         let model = SemanticModel {
+            ports: vec![],
             name: "test".into(),
             domains: vec![],
             regions: vec![],

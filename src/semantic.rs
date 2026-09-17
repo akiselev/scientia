@@ -275,6 +275,12 @@ fn resolve_imports(
         .chain(module.systems.iter().map(|system| system.name.as_str()))
         .chain(
             module
+                .connectors
+                .iter()
+                .map(|connector| connector.name.as_str()),
+        )
+        .chain(
+            module
                 .providers
                 .iter()
                 .map(|provider| provider.provider.name.as_str()),
@@ -340,15 +346,28 @@ fn resolve_imports(
                         .filter(|provider| provider.public)
                         .map(|provider| (DeclKind::Provider, provider.provider.name.clone())),
                 )
+                .chain(
+                    target
+                        .module
+                        .connectors
+                        .iter()
+                        .filter(|c| c.public)
+                        .map(|c| (DeclKind::Connector, c.name.clone())),
+                )
                 .collect::<Vec<_>>()
         };
         match (&import.alias, &import.items) {
             (_, Some(items)) => {
                 for item in items {
-                    let candidates = [DeclKind::Model, DeclKind::System, DeclKind::Provider]
-                        .into_iter()
-                        .filter_map(|kind| closure.declaration(&import.module, kind, &item.name))
-                        .collect::<Vec<_>>();
+                    let candidates = [
+                        DeclKind::Model,
+                        DeclKind::System,
+                        DeclKind::Provider,
+                        DeclKind::Connector,
+                    ]
+                    .into_iter()
+                    .filter_map(|kind| closure.declaration(&import.module, kind, &item.name))
+                    .collect::<Vec<_>>();
                     let Some(id) = candidates.into_iter().next() else {
                         diagnostics.push(SourceDiagnostic::error(
                             "RESOLVE_UNKNOWN_IMPORT",
@@ -439,10 +458,28 @@ pub struct SemanticModel {
     pub name: String,
     pub domains: Vec<SemanticDomain>,
     pub regions: Vec<SemanticRegion>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ports: Vec<SemanticPort>,
     pub providers: Vec<SemanticProvider>,
     pub symbols: Vec<SemanticSymbol>,
     pub expressions: Arc<[SemanticExpr]>,
     pub declarations: Vec<SemanticDeclaration>,
+    pub span: SourceSpan,
+}
+
+/// Bounded H1 scalar boundary port. The field trace and outward normal-flux
+/// datum are distinct; no mesh or numerical flux is introduced during elaboration.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SemanticPort {
+    pub name: String,
+    pub connector: String,
+    pub region: RegionId,
+    pub equation: DeclarationId,
+    pub field: SymbolId,
+    pub equal_member: String,
+    pub balance_member: String,
+    pub flux: SymbolId,
+    pub orientation: i8,
     pub span: SourceSpan,
 }
 
@@ -1022,17 +1059,192 @@ impl<'a> Elaborator<'a> {
         self.declare_providers(diagnostics);
         self.declare_value_symbols(diagnostics);
         self.declare_regions();
+        for region in &self.source.regions {
+            if !self.domain_names.contains_key(&region.domain) {
+                diagnostics.push(error(
+                    "PORT_REGION_DOMAIN",
+                    "unknown region domain",
+                    region.span,
+                ));
+            }
+        }
         self.elaborate_definitions(diagnostics);
+        let ports = self.elaborate_ports(diagnostics);
         SemanticModel {
             name: self.source.name.clone(),
             domains: self.domains,
             regions: self.regions,
             providers: self.providers,
+            ports,
             symbols: self.symbols,
             expressions: self.expressions.into(),
             declarations: self.declarations,
             span: self.source.span,
         }
+    }
+
+    fn elaborate_ports(&self, diagnostics: &mut Vec<SourceDiagnostic>) -> Vec<SemanticPort> {
+        let mut ports = vec![];
+        for equation in &self.source.equations {
+            if equation.oriented_by.is_some()
+                && !self
+                    .source
+                    .ports
+                    .iter()
+                    .any(|p| p.equation == equation.name)
+            {
+                diagnostics.push(error(
+                    "PORT_FLUX_ORIENTATION_UNSUPPORTED",
+                    "explicit flux orientation currently requires an exposed boundary port",
+                    equation.span,
+                ));
+            }
+        }
+        for port in &self.source.ports {
+            let compile = || -> Result<SemanticPort, &'static str> {
+                let region = self
+                    .region_names
+                    .get(&(RegionKind::ExteriorFacet, port.region.clone()))
+                    .copied()
+                    .ok_or("PORT_REGION_UNKNOWN")?;
+                let equation = self
+                    .declarations
+                    .iter()
+                    .find(|d| {
+                        d.name == port.equation
+                            && matches!(d.kind, SemanticDeclarationKind::Equation { .. })
+                    })
+                    .ok_or("PORT_EQUATION_UNKNOWN")?;
+                let source = self
+                    .source
+                    .equations
+                    .iter()
+                    .find(|e| e.name == port.equation)
+                    .ok_or("PORT_EQUATION_UNKNOWN")?;
+                let flux_name = source
+                    .oriented_by
+                    .as_ref()
+                    .ok_or("PORT_FLUX_ORIENTATION_UNDECIDABLE")?;
+                // First elimination gate: one explicitly oriented steady divergence. More
+                // general residual decomposition must derive an unambiguous dual datum.
+                fn divergence(expr: &Expr, name: &str) -> Option<i8> {
+                    match expr {
+                        Expr::Call { function, args, .. }
+                            if function == "div"
+                                && args.len() == 1
+                                && matches!(&args[0], Expr::Name {name:n,..} if n==name) =>
+                        {
+                            Some(1)
+                        }
+                        Expr::Unary {
+                            op: UnaryOp::Neg,
+                            arg,
+                            ..
+                        } => divergence(arg, name).map(|s| -s),
+                        _ => None,
+                    }
+                }
+                let zero = |e: &Expr| matches!(e,Expr::Number {value,..} if *value==0.0);
+                let orientation = if zero(&source.rhs) {
+                    divergence(&source.lhs, flux_name)
+                } else if zero(&source.lhs) {
+                    divergence(&source.rhs, flux_name).map(|s| -s)
+                } else {
+                    None
+                }
+                .ok_or("PORT_FLUX_ORIENTATION_UNDECIDABLE")?;
+                let flux = *self
+                    .symbol_names
+                    .get(flux_name)
+                    .ok_or("PORT_FLUX_UNKNOWN")?;
+                let mut equal = None;
+                let mut balance = None;
+                for (name, expr) in &port.members {
+                    match expr {
+                        Expr::Call { function, args, .. }
+                            if function == "trace" && args.len() == 1 =>
+                        {
+                            let Expr::Name { name: field, .. } = &args[0] else {
+                                return Err("PORT_TRACE_UNSUPPORTED");
+                            };
+                            if equal.is_some() {
+                                return Err("PORT_MEMBER_DUPLICATE");
+                            }
+                            equal = Some((
+                                name.clone(),
+                                *self.symbol_names.get(field).ok_or("PORT_FIELD_UNKNOWN")?,
+                            ));
+                        }
+                        Expr::Call { function, args, .. }
+                            if function == "boundary_flux"
+                                && args.len() == 1
+                                && matches!(&args[0],Expr::Name {name,..} if name==&port.equation) =>
+                        {
+                            if balance.is_some() {
+                                return Err("PORT_MEMBER_DUPLICATE");
+                            }
+                            balance = Some(name.clone());
+                        }
+                        _ => return Err("PORT_MEMBER_UNSUPPORTED"),
+                    }
+                }
+                let (equal_member, field) = equal.ok_or("PORT_MEMBER_UNASSIGNED")?;
+                let balance_member = balance.ok_or("PORT_MEMBER_UNASSIGNED")?;
+                if equal_member == balance_member {
+                    return Err("PORT_MEMBER_DUPLICATE");
+                }
+                let symbol = &self.symbols[field.index()];
+                if !matches!(symbol.ty.shape, SemanticShape::Numeric(ValueShape::Scalar))
+                    || !matches!(
+                        symbol.ty.role,
+                        SemanticRole::PhysicalField(FieldRole::State | FieldRole::Unknown)
+                    )
+                    || !symbol
+                        .space
+                        .as_ref()
+                        .is_some_and(|s| s.family == crate::scientific::SpaceFamily::H1)
+                {
+                    return Err("PORT_TRACE_CLASS_UNSUPPORTED");
+                }
+                if symbol.domain != self.regions[region.index()].domain
+                    || equation.domain != symbol.domain
+                {
+                    return Err("PORT_DOMAIN_MISMATCH");
+                }
+                if self.source.boundary_conditions.iter().any(|b| {
+                    region_name(&b.region).unwrap_or(&b.name) == port.region
+                        && b.target == symbol.name
+                }) {
+                    return Err("SYSTEM_PORT_OVERLAP");
+                }
+                if ports.iter().any(|p: &SemanticPort| {
+                    p.name == port.name || (p.region == region && p.field == field)
+                }) {
+                    return Err("SYSTEM_PORT_OVERLAP");
+                }
+                Ok(SemanticPort {
+                    name: port.name.clone(),
+                    connector: port.connector.clone(),
+                    region,
+                    equation: equation.id,
+                    field,
+                    equal_member,
+                    balance_member,
+                    flux,
+                    orientation,
+                    span: port.span,
+                })
+            };
+            match compile() {
+                Ok(port) => ports.push(port),
+                Err(code) => diagnostics.push(error(
+                    code,
+                    format!("port {} cannot be elaborated", port.name),
+                    port.span,
+                )),
+            }
+        }
+        ports
     }
 
     fn declare_domains(&mut self, diagnostics: &mut Vec<SourceDiagnostic>) {
@@ -1312,6 +1524,14 @@ impl<'a> Elaborator<'a> {
     }
 
     fn declare_regions(&mut self) {
+        for region in &self.source.regions {
+            self.intern_region(
+                RegionKind::ExteriorFacet,
+                &region.name,
+                self.domain_names.get(&region.domain).copied(),
+                region.span,
+            );
+        }
         for condition in &self.source.boundary_conditions {
             let name = region_name(&condition.region).unwrap_or(&condition.name);
             let domain = self

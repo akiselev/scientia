@@ -17,6 +17,7 @@ pub mod kernel;
 pub mod method;
 pub mod objective;
 pub mod point_expression;
+pub mod ports;
 pub mod projection;
 pub mod property_kernel;
 pub mod property_tensor;

@@ -150,6 +150,12 @@ pub enum FormAssumption {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum BoundaryTermDisposition {
+    /// A required outward datum, closed only by a system relation and owner realization.
+    Open {
+        port: String,
+        field: SymbolId,
+        flux: ExprId,
+    },
     /// Batch P (`sinbad/ARCHITECTURE.md` §4.4 `ImplicitNatural`): the region carries no
     /// boundary condition for the test field, so the flux datum is the natural zero and the
     /// boundary term is substituted by zero -- no integral is emitted. Keeping a state-computed
@@ -1388,6 +1394,30 @@ fn derive_boundary_terms(
                 } if condition_region == region.id && target == test_field
             )
         });
+        if let Some(port) = model.ports.iter().find(|p| {
+            p.region == region.id
+                && p.field == test_field
+                && model.declarations[p.equation.index()].name == equation_name
+        }) {
+            if condition.is_some() {
+                return Err(FormCompileError::UnsupportedStrongForm {
+                    code: "SYSTEM_PORT_OVERLAP",
+                    equation: equation_name.to_owned(),
+                    detail: "port and boundary condition overlap".into(),
+                });
+            }
+            boundary_terms.push(BoundaryTermReceipt {
+                region: region.id,
+                source,
+                integrand: formal,
+                disposition: BoundaryTermDisposition::Open {
+                    port: port.name.clone(),
+                    field: test_field,
+                    flux: arena.with_sign(flux, sign, region.span),
+                },
+            });
+            continue;
+        }
         match condition.map(|condition| (&condition.kind, condition.id)) {
             Some((
                 SemanticDeclarationKind::BoundaryCondition {

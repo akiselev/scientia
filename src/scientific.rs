@@ -22,6 +22,8 @@ pub struct ScientificModule {
     /// from the digest projection when empty so every pre-SC module keeps its digest.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub systems: Vec<SystemDecl>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub connectors: Vec<ConnectorDecl>,
     /// Module-level `pub? provider` signatures (§3.2): the importable provider declarations.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub providers: Vec<ModuleProviderDecl>,
@@ -63,6 +65,7 @@ pub enum DeclKind {
     Model,
     System,
     Provider,
+    Connector,
 }
 
 /// Identity of every importable declaration (`sinbad/ARCHITECTURE.md` §2.1): the declaring
@@ -90,6 +93,53 @@ pub struct SystemDecl {
     pub domains: Vec<DomainDecl>,
     pub instances: Vec<InstanceDecl>,
     pub binds: Vec<BindDecl>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub interfaces: Vec<InterfaceDecl>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub connects: Vec<ConnectDecl>,
+    pub span: SourceSpan,
+}
+
+/// A boundary connector declares equal primal traces and conserved outward dual traces.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ConnectorDecl {
+    pub name: String,
+    pub public: bool,
+    pub members: Vec<ConnectorMember>,
+    pub span: SourceSpan,
+}
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ConnectorMember {
+    pub name: String,
+    pub balance: bool,
+    pub quantity_kind: QuantityKindId,
+    pub conserves: Option<QuantityKindId>,
+    pub span: SourceSpan,
+}
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct RegionDecl {
+    pub name: String,
+    pub domain: String,
+    pub span: SourceSpan,
+}
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PortDecl {
+    pub name: String,
+    pub connector: String,
+    pub region: String,
+    pub equation: String,
+    pub members: Vec<(String, Expr)>,
+    pub span: SourceSpan,
+}
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct InterfaceDecl {
+    pub name: String,
+    pub domains: [String; 2],
+    pub span: SourceSpan,
+}
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ConnectDecl {
+    pub ports: Vec<MemberPath>,
     pub span: SourceSpan,
 }
 
@@ -135,6 +185,10 @@ pub struct ScientificModel {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub public: bool,
     pub domains: Vec<DomainDecl>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub regions: Vec<RegionDecl>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ports: Vec<PortDecl>,
     pub fields: Vec<FieldDecl>,
     pub parameters: Vec<ValueDecl>,
     pub constants: Vec<ValueDecl>,
@@ -353,6 +407,8 @@ pub struct EquationDecl {
     pub name: String,
     pub domain: Option<String>,
     pub domain_span: Option<SourceSpan>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub oriented_by: Option<String>,
     pub lhs: Expr,
     pub rhs: Expr,
     pub span: SourceSpan,
@@ -881,6 +937,7 @@ impl Parser {
         }
         let mut models = vec![];
         let mut systems = vec![];
+        let mut connectors = vec![];
         let mut providers = vec![];
         while !matches!(self.token().kind, TokenKind::Eof) {
             let public = self.eat_ident("pub");
@@ -888,6 +945,11 @@ impl Parser {
                 if let Some(mut model) = self.model() {
                     model.public = public;
                     models.push(model);
+                }
+            } else if self.eat_ident("connector") {
+                if let Some(mut connector) = self.connector() {
+                    connector.public = public;
+                    connectors.push(connector);
                 }
             } else if self.eat_ident("system") {
                 if let Some(mut system) = self.system() {
@@ -912,6 +974,7 @@ impl Parser {
             imports,
             models,
             systems,
+            connectors,
             providers,
             span: SourceSpan::new(start, self.token().span.end),
         }
@@ -978,6 +1041,8 @@ impl Parser {
             domains: vec![],
             instances: vec![],
             binds: vec![],
+            interfaces: vec![],
+            connects: vec![],
             span,
         };
         while !matches!(self.token().kind, TokenKind::Eof | TokenKind::Punct('}')) {
@@ -985,6 +1050,27 @@ impl Parser {
                 if let Some(domain) = self.domain() {
                     system.domains.push(domain);
                 }
+            } else if self.eat_ident("interface") {
+                if let Some(interface) = self.interface_decl() {
+                    system.interfaces.push(interface);
+                }
+            } else if self.eat_ident("connect") {
+                let span = self.token().span;
+                self.expect_punct('(');
+                let mut ports = vec![];
+                while !self.eat_punct(')') && !matches!(self.token().kind, TokenKind::Eof) {
+                    if let Some(port) = self.member_path() {
+                        ports.push(port);
+                    } else {
+                        break;
+                    }
+                    if !self.eat_punct(',') {
+                        self.expect_punct(')');
+                        break;
+                    }
+                }
+                self.expect_punct(';');
+                system.connects.push(ConnectDecl { ports, span });
             } else if self.eat_ident("instance") {
                 if let Some(instance) = self.instance_decl() {
                     system.instances.push(instance);
@@ -1003,6 +1089,97 @@ impl Parser {
         self.expect_punct('}');
         self.eat_punct(';');
         Some(system)
+    }
+
+    fn connector(&mut self) -> Option<ConnectorDecl> {
+        let (name, span) = self.expect_ident_value()?;
+        self.expect_punct('{');
+        let mut members = vec![];
+        while !self.eat_punct('}') && !matches!(self.token().kind, TokenKind::Eof) {
+            let balance = if self.eat_ident("balance") {
+                true
+            } else {
+                self.expect_ident("equal");
+                false
+            };
+            let (name, span) = self.expect_ident_value()?;
+            self.expect_punct(':');
+            let quantity_kind = QuantityKindId::new(self.expect_ident_value()?.0);
+            let conserves = if self.eat_ident("conserves") {
+                Some(QuantityKindId::new(self.expect_ident_value()?.0))
+            } else {
+                None
+            };
+            self.expect_punct(';');
+            members.push(ConnectorMember {
+                name,
+                balance,
+                quantity_kind,
+                conserves,
+                span,
+            });
+        }
+        self.eat_punct(';');
+        Some(ConnectorDecl {
+            name,
+            public: false,
+            members,
+            span,
+        })
+    }
+    fn port_decl(&mut self) -> Option<PortDecl> {
+        let (name, span) = self.expect_ident_value()?;
+        self.expect_punct(':');
+        let connector = self.expect_ident_value()?.0;
+        self.expect_ident("on");
+        let region = self.expect_ident_value()?.0;
+        self.expect_ident("from");
+        self.expect_ident("equation");
+        let equation = self.expect_ident_value()?.0;
+        self.expect_punct('{');
+        let mut members = vec![];
+        while !self.eat_punct('}') && !matches!(self.token().kind, TokenKind::Eof) {
+            let name = self.expect_ident_value()?.0;
+            if !self.eat_op("=") {
+                self.error("port member requires `=`".into());
+                return None;
+            }
+            let expression = self.expr(0)?;
+            self.expect_punct(';');
+            members.push((name, expression));
+        }
+        self.eat_punct(';');
+        Some(PortDecl {
+            name,
+            connector,
+            region,
+            equation,
+            members,
+            span,
+        })
+    }
+    fn interface_decl(&mut self) -> Option<InterfaceDecl> {
+        let (name, span) = self.expect_ident_value()?;
+        self.expect_ident("between");
+        let mut domain = || -> Option<String> {
+            self.expect_ident("boundary");
+            self.expect_punct('(');
+            let name = self.expect_ident_value()?.0;
+            self.expect_punct(')');
+            Some(name)
+        };
+        let first = domain()?;
+        self.expect_punct(',');
+        self.expect_ident("boundary");
+        self.expect_punct('(');
+        let second = self.expect_ident_value()?.0;
+        self.expect_punct(')');
+        self.expect_punct(';');
+        Some(InterfaceDecl {
+            name,
+            domains: [first, second],
+            span,
+        })
     }
 
     fn instance_decl(&mut self) -> Option<InstanceDecl> {
@@ -1140,6 +1317,8 @@ impl Parser {
             public: false,
             domains: vec![],
             fields: vec![],
+            regions: vec![],
+            ports: vec![],
             parameters: vec![],
             constants: vec![],
             sources: vec![],
@@ -1163,6 +1342,24 @@ impl Parser {
             if self.eat_ident("domain") {
                 if let Some(x) = self.domain() {
                     model.domains.push(x);
+                }
+            } else if self.eat_ident("region") {
+                let Some((name, span)) = self.expect_ident_value() else {
+                    self.sync();
+                    continue;
+                };
+                self.expect_punct(':');
+                self.expect_ident("boundary");
+                self.expect_ident("of");
+                let Some((domain, _)) = self.expect_ident_value() else {
+                    self.sync();
+                    continue;
+                };
+                self.expect_punct(';');
+                model.regions.push(RegionDecl { name, domain, span });
+            } else if self.eat_ident("port") {
+                if let Some(port) = self.port_decl() {
+                    model.ports.push(port);
                 }
             } else if self.eat_ident("field") {
                 if let Some(x) = self.field() {
@@ -1898,6 +2095,12 @@ impl Parser {
         } else {
             (None, None)
         };
+        let oriented_by = if self.eat_ident("oriented") {
+            self.expect_ident("by");
+            Some(self.expect_ident_value()?.0)
+        } else {
+            None
+        };
         self.expect_punct('{');
         // Top-level equality belongs to the equation declaration, not the expression tree.
         // Parse above equality precedence so comparisons remain legal inside each side.
@@ -1913,6 +2116,7 @@ impl Parser {
             name,
             domain,
             domain_span,
+            oriented_by,
             lhs,
             rhs,
             span,
@@ -2441,9 +2645,43 @@ pub fn format_scientific_module(module: &ScientificModule) -> String {
         format_provider(&mut rendered, &entry.provider);
         out.push_str(&format!("{visibility}{}", rendered.trim_start()));
     }
+    for connector in &module.connectors {
+        let visibility = if connector.public { "pub " } else { "" };
+        out.push_str(&format!("{visibility}connector {} {{\n", connector.name));
+        for member in &connector.members {
+            let role = if member.balance { "balance" } else { "equal" };
+            let conserves = member
+                .conserves
+                .as_ref()
+                .map(|k| format!(" conserves {}", k.as_str()))
+                .unwrap_or_default();
+            out.push_str(&format!(
+                "    {role} {}: {}{conserves};\n",
+                member.name,
+                member.quantity_kind.as_str()
+            ));
+        }
+        out.push_str("}\n\n");
+    }
     for model in &module.models {
         let visibility = if model.public { "pub " } else { "" };
         out.push_str(&format!("{visibility}model {} {{\n", model.name));
+        for region in &model.regions {
+            out.push_str(&format!(
+                "    region {}: boundary of {};\n",
+                region.name, region.domain
+            ));
+        }
+        for port in &model.ports {
+            out.push_str(&format!(
+                "    port {}: {} on {} from equation {} {{\n",
+                port.name, port.connector, port.region, port.equation
+            ));
+            for (member, value) in &port.members {
+                out.push_str(&format!("        {member} = {};\n", format_expr(value)));
+            }
+            out.push_str("    }\n");
+        }
         for d in &model.domains {
             out.push_str(&format!(
                 "    domain {} {{ dimension = {}; coordinates = {}; }}\n",
@@ -2575,11 +2813,15 @@ pub fn format_scientific_module(module: &ScientificModule) -> String {
         }
         for e in &model.equations {
             out.push_str(&format!(
-                "    equation {}{} {{ {} = {}; }}\n",
+                "    equation {}{}{} {{ {} = {}; }}\n",
                 e.name,
                 e.domain
                     .as_ref()
                     .map(|d| format!(" on {d}"))
+                    .unwrap_or_default(),
+                e.oriented_by
+                    .as_ref()
+                    .map(|name| format!(" oriented by {name}"))
                     .unwrap_or_default(),
                 format_expr(&e.lhs),
                 format_expr(&e.rhs)
@@ -2690,6 +2932,21 @@ pub fn format_scientific_module(module: &ScientificModule) -> String {
                 d.dimension,
                 coordinate_name(&d.coordinates)
             ));
+        }
+        for interface in &system.interfaces {
+            out.push_str(&format!(
+                "    interface {} between boundary({}), boundary({});\n",
+                interface.name, interface.domains[0], interface.domains[1]
+            ));
+        }
+        for connection in &system.connects {
+            let ports = connection
+                .ports
+                .iter()
+                .map(|p| format!("{}.{}", p.instance, p.member))
+                .collect::<Vec<_>>()
+                .join(", ");
+            out.push_str(&format!("    connect({ports});\n"));
         }
         for instance in &system.instances {
             let arguments = if instance.arguments.is_empty() {
@@ -3028,6 +3285,7 @@ impl ModuleClosure {
     pub fn declaration(&self, module: &str, kind: DeclKind, name: &str) -> Option<GlobalDeclId> {
         let entry = self.module(module)?;
         let declared = match kind {
+            DeclKind::Connector => entry.module.connectors.iter().any(|c| c.name == name),
             DeclKind::Model => entry.module.models.iter().any(|model| model.name == name),
             DeclKind::System => entry
                 .module
@@ -3053,6 +3311,11 @@ impl ModuleClosure {
             return false;
         };
         match id.kind {
+            DeclKind::Connector => entry
+                .module
+                .connectors
+                .iter()
+                .any(|c| c.name == id.name && c.public),
             DeclKind::Model => entry
                 .module
                 .models

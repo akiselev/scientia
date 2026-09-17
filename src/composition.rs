@@ -139,6 +139,7 @@ pub enum OrientationBasis {
     Accumulation,
     /// No accumulation term and no `oriented by` (SC-W2); the authored sign is kept.
     Unoriented,
+    ExplicitFlux,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -274,6 +275,8 @@ pub struct ScientificSystem {
     pub outputs: Vec<SystemOutput>,
     pub slots: SystemSlotManifest,
     pub binds: Vec<SystemBind>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub connections: Vec<crate::ports::ConnectionSet>,
     pub dependency: SystemDependency,
     pub origin_map: OriginMap,
     pub identity: Digest,
@@ -306,6 +309,8 @@ impl SystemCompilation {
 
 #[derive(Clone, Debug, Error, PartialEq)]
 pub enum SystemError {
+    #[error("{code}: {detail}")]
+    Port { code: String, detail: String },
     #[error("SYSTEM_UNKNOWN_SYSTEM: module `{module}` declares no system `{system}`")]
     UnknownSystem { module: String, system: String },
     #[error(
@@ -463,7 +468,11 @@ pub fn compile_system(
             },
         )?;
     }
-    builder.finish(declaration.span)
+    let mut compilation = builder.finish(declaration.span)?;
+    compilation.system.connections =
+        crate::ports::compile_connections(closure, registries, declaration, &compilation)?;
+    compilation.system.identity = compilation.system.expected_identity();
+    Ok(compilation)
 }
 
 /// Compile the implicit one-instance system of `model_name`, declared in the closure's root
@@ -497,6 +506,12 @@ pub fn compile_model_system(
             model: model_name.to_owned(),
         })?;
     let span = semantic_model.span;
+    if !semantic_model.ports.is_empty() {
+        return Err(SystemError::Port {
+            code: "SYSTEM_PORT_UNCLOSED".into(),
+            detail: "a model with boundary ports requires a system connection".into(),
+        });
+    }
     let domains = semantic_model
         .domains
         .iter()
@@ -646,9 +661,25 @@ impl Builder<'_> {
             }
         };
 
+        let mut parameters = BTreeSet::new();
+        for (parameter, _) in arguments {
+            if !parameters.insert(parameter) {
+                return Err(SystemError::Port {
+                    code: "SYSTEM_ARGUMENT_DUPLICATE".into(),
+                    detail: format!("{name}.{parameter}"),
+                });
+            }
+        }
         // Domain parameters.
         let mut domain_map = Vec::new();
         for (parameter, value) in arguments {
+            if model
+                .regions
+                .iter()
+                .any(|r| &r.name == parameter && model.ports.iter().any(|p| p.region == r.id))
+            {
+                continue;
+            }
             let Some(domain) = model
                 .domains
                 .iter()
@@ -740,7 +771,12 @@ impl Builder<'_> {
             let SemanticDeclarationKind::Equation { lhs, rhs } = declaration.kind else {
                 continue;
             };
-            let (orientation, orientation_basis) = orient_equation(&model, lhs, rhs);
+            let (orientation, orientation_basis) = model
+                .ports
+                .iter()
+                .find(|p| p.equation == declaration.id)
+                .map(|p| (p.orientation, OrientationBasis::ExplicitFlux))
+                .unwrap_or_else(|| orient_equation(&model, lhs, rhs));
             self.residuals.push(SysRes {
                 id: SysResId(self.residuals.len() as u32),
                 origin: ResidualOrigin::Equation {
@@ -1133,6 +1169,7 @@ impl Builder<'_> {
             outputs,
             slots,
             binds,
+            connections: vec![],
             dependency,
             origin_map,
             identity: Digest::blake3(b"unset"),
@@ -1191,6 +1228,8 @@ struct SystemIdentity<'a> {
     outputs: &'a [SystemOutput],
     slots: &'a Digest,
     binds: &'a [SystemBind],
+    #[serde(skip_serializing_if = "<[crate::ports::ConnectionSet]>::is_empty")]
+    connections: &'a [crate::ports::ConnectionSet],
     dependency: &'a SystemDependency,
 }
 
@@ -1210,6 +1249,7 @@ impl ScientificSystem {
             outputs: &self.outputs,
             slots: &self.slots.identity,
             binds: &self.binds,
+            connections: &self.connections,
             dependency: &self.dependency,
         })
     }
@@ -1220,6 +1260,25 @@ impl ScientificSystem {
                 module: self.name.clone(),
                 detail: "SYSTEM_IDENTITY_MISMATCH: identity does not match contents".into(),
             });
+        }
+        for connection in &self.connections {
+            connection.validate()?;
+            for port in &connection.ports {
+                let instance = self.instances.get(port.instance.index());
+                let variable = self.variables.get(port.variable.index());
+                let region = self.regions.get(port.region.index());
+                let residual = self.residuals.get(port.residual.index());
+                if !instance.is_some_and(|i| i.instance == port.instance
+                    && i.region_map.iter().any(|(_, r)| *r == port.region))
+                    || !variable.is_some_and(|v| v.id == port.variable && v.owner == port.instance)
+                    || !region.is_some_and(|r| r.id == port.region && r.domain == Some(port.domain))
+                    || !residual.is_some_and(|r| r.id == port.residual && r.orientation == port.orientation
+                        && matches!(&r.origin, ResidualOrigin::Equation { instance, .. } if *instance == port.instance))
+                    || !self.domains.iter().any(|d| d.id == port.domain)
+                {
+                    return Err(SystemError::Port { code: "SYSTEM_CONNECTION_INVALID".into(), detail: "connection endpoint does not match its parent system".into() });
+                }
+            }
         }
         Ok(())
     }

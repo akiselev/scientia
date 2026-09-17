@@ -1,5 +1,18 @@
 # Scientia status
 
+SC-W2 first matching-interface implementation (2026-09-17): connector, region,
+port, interface and connect declarations; explicit outward flux orientation;
+source-located typed two-port ConnectionSet; quantity-kind/conservation checks;
+Open boundary receipts. Unclosed/overlapping/wrong-kind/duplicate-argument and
+unorientable declarations refuse. A standalone model with ports cannot run
+without closure. General per-stratum matching, n-way merging, transient ports
+and multiplier semantics remain planned; this is not all of SC-W2.
+Owner gate: 193 tests across 32 targets, fmt, strict all-feature clippy, rustdoc
+and doctests pass with unchanged source hashes. Consumer acceptance is pending.
+Quantitas dependency: `c4c05b482a4fd8996dfdccac12316100a3b7f18d`.
+Evidence: `docs/validation/2026-09-17-sc-w2/`.
+
+
 Updated: 2026-09-08
 Branch: `master`, committed base `d27780d`.
 Milestone: W8 compiled property input activity and tensor-trace point lowering;

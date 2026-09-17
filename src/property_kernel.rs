@@ -190,6 +190,7 @@ fn build_kernel(
     let value_id = lift_standalone_expr(expr, inputs, &mut symbols, &mut expressions)
         .map_err(PropertyKernelError::Parse)?;
     let model = SemanticModel {
+        ports: vec![],
         name: definition.signature.id.clone(),
         domains: vec![],
         regions: vec![],
