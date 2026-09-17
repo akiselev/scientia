@@ -13,9 +13,9 @@ Quantitas dependency: `c4c05b482a4fd8996dfdccac12316100a3b7f18d`.
 Evidence: `docs/validation/2026-09-17-sc-w2/`.
 
 
-Updated: 2026-09-08
-Branch: `master`, committed base `d27780d`.
-Milestone: W8 compiled property input activity and tensor-trace point lowering;
+Updated: 2026-09-17
+Branch: `master`.
+Milestone: SC-W2 first matching-interface compiler gate;
 Sinbad consumer acceptance remains a separate gate.
 
 ## Ownership
