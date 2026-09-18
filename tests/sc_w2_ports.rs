@@ -108,3 +108,73 @@ fn missing_closures_wrong_types_orientation_and_domain_relations_refuse() {
         assert!(error.contains(expected), "{expected}: {error}");
     }
 }
+
+#[test]
+fn storage_and_sources_preserve_the_declared_outward_flux() {
+    let source = SOURCE
+        .replace("T: unknown", "T: state")
+        .replace("constitutive q", "provider density() -> Density { differentiability = symbolic; }\n provider capacity() -> SpecificHeat { differentiability = symbolic; }\n provider heating() -> VolumetricHeatSource { differentiability = symbolic; }\n constitutive q");
+    for (equation, orientation) in [
+        ("density() * capacity() * dt(T) + div(q) = heating()", 1),
+        ("heating() = density() * capacity() * dt(T) + div(q)", -1),
+        ("density() * capacity() * dt(T) = heating() - div(q)", 1),
+    ] {
+        let compiled = compile(&source.replace("div(q) = 0", equation)).unwrap();
+        assert!(
+            compiled.system.connections[0]
+                .ports
+                .iter()
+                .all(|p| p.orientation == orientation)
+        );
+        compiled.system.validate().unwrap();
+    }
+}
+
+#[test]
+fn ambiguous_or_scaled_flux_cannot_be_closed_as_the_declared_flux() {
+    for equation in [
+        "2 * div(q) = 0",
+        "div(q) + div(q) = 0",
+        "div(q) = div(q)",
+        "div(q) + div(-k * grad(T)) = 0",
+        "0 = 0",
+    ] {
+        let error = compile(&SOURCE.replace("div(q) = 0", equation)).unwrap_err();
+        assert!(
+            error.contains("PORT_FLUX_ORIENTATION_UNDECIDABLE"),
+            "{equation}: {error}"
+        );
+    }
+    let hidden = SOURCE
+        .replacen(
+            "equation energy",
+            "source hidden = div(q);\n equation energy",
+            1,
+        )
+        .replace("div(q) = 0", "div(q) = hidden");
+    let error = compile(&hidden).unwrap_err();
+    assert!(
+        error.contains("PORT_FLUX_ORIENTATION_UNDECIDABLE"),
+        "{error}"
+    );
+}
+
+#[test]
+fn transient_species_diffusion_uses_the_same_flux_extraction() {
+    let source = SOURCE
+        .replace("T: unknown", "T: state")
+        .replace("ThermodynamicTemperature", "Concentration")
+        .replace("ThermalConductivity", "Diffusivity")
+        .replace("HeatFlux", "SpeciesFlux")
+        .replace("conserves Energy", "conserves Amount")
+        .replace("unit = K", "unit = mol/m^3")
+        .replace("div(q) = 0", "dt(T) + div(q) = 0");
+    let compiled = compile(&source).unwrap();
+    assert!(
+        compiled.system.connections[0]
+            .ports
+            .iter()
+            .all(|p| p.orientation == 1)
+    );
+    scientia::compile_system_operator(&compiled).unwrap();
+}

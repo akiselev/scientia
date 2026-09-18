@@ -1083,6 +1083,116 @@ impl<'a> Elaborator<'a> {
         }
     }
 
+    /// Extract exactly one signed divergence of the declared flux from lhs-rhs.
+    /// Storage and volumetric sources may be arbitrary supported expressions, but
+    /// hidden, scaled, repeated or additional divergences cannot be mistaken for
+    /// that flux. A coefficient belongs inside the authored flux definition.
+    fn port_flux_orientation(
+        &self,
+        lhs: ExprId,
+        rhs: ExprId,
+        flux: SymbolId,
+    ) -> Result<i8, &'static str> {
+        const ERROR: &str = "PORT_FLUX_ORIENTATION_UNDECIDABLE";
+        fn contains_divergence(
+            context: &Elaborator<'_>,
+            id: ExprId,
+            visited: &mut std::collections::BTreeSet<ExprId>,
+        ) -> bool {
+            if !visited.insert(id) {
+                return false;
+            }
+            let expression = &context.expressions[id.index()].kind;
+            if matches!(
+                expression,
+                SemanticExprKind::Differential {
+                    operator: DifferentialOperator::Divergence | DifferentialOperator::Curl,
+                    ..
+                }
+            ) {
+                return true;
+            }
+            if let SemanticExprKind::Symbol { symbol } = expression {
+                for declaration in &context.declarations {
+                    if declaration.symbol != Some(*symbol) {
+                        continue;
+                    }
+                    let value = match declaration.kind {
+                        SemanticDeclarationKind::Value { value } => value,
+                        SemanticDeclarationKind::Property { value }
+                        | SemanticDeclarationKind::ConstitutiveLaw { value }
+                        | SemanticDeclarationKind::Output { value, .. } => Some(value),
+                        _ => None,
+                    };
+                    if value.is_some_and(|value| contains_divergence(context, value, visited)) {
+                        return true;
+                    }
+                }
+            }
+            crate::formulation::expression_children(expression)
+                .into_iter()
+                .any(|child| contains_divergence(context, child, visited))
+        }
+        fn collect(
+            context: &Elaborator<'_>,
+            id: ExprId,
+            flux: SymbolId,
+            sign: i8,
+            signs: &mut Vec<i8>,
+        ) -> Result<(), &'static str> {
+            match &context.expressions[id.index()].kind {
+                SemanticExprKind::Unary {
+                    op: UnaryOp::Neg,
+                    arg,
+                } => {
+                    collect(context, *arg, flux, -sign, signs)?;
+                }
+                SemanticExprKind::Binary {
+                    op: BinaryOp::Add | BinaryOp::Sub,
+                    lhs,
+                    rhs,
+                } => {
+                    let subtract = matches!(
+                        context.expressions[id.index()].kind,
+                        SemanticExprKind::Binary {
+                            op: BinaryOp::Sub,
+                            ..
+                        }
+                    );
+                    collect(context, *lhs, flux, sign, signs)?;
+                    collect(
+                        context,
+                        *rhs,
+                        flux,
+                        if subtract { -sign } else { sign },
+                        signs,
+                    )?;
+                }
+                SemanticExprKind::Differential {
+                    operator: DifferentialOperator::Divergence,
+                    arg,
+                } if matches!(context.expressions[arg.index()].kind,
+                        SemanticExprKind::Symbol { symbol } if symbol == flux) =>
+                {
+                    signs.push(sign);
+                }
+                _ => {
+                    if contains_divergence(context, id, &mut Default::default()) {
+                        return Err(ERROR);
+                    }
+                }
+            }
+            Ok(())
+        }
+        let mut signs = Vec::new();
+        collect(self, lhs, flux, 1, &mut signs)?;
+        collect(self, rhs, flux, -1, &mut signs)?;
+        match signs.as_slice() {
+            [sign] => Ok(*sign),
+            _ => Err(ERROR),
+        }
+    }
+
     fn elaborate_ports(&self, diagnostics: &mut Vec<SourceDiagnostic>) -> Vec<SemanticPort> {
         let mut ports = vec![];
         for equation in &self.source.equations {
@@ -1125,38 +1235,14 @@ impl<'a> Elaborator<'a> {
                     .oriented_by
                     .as_ref()
                     .ok_or("PORT_FLUX_ORIENTATION_UNDECIDABLE")?;
-                // First elimination gate: one explicitly oriented steady divergence. More
-                // general residual decomposition must derive an unambiguous dual datum.
-                fn divergence(expr: &Expr, name: &str) -> Option<i8> {
-                    match expr {
-                        Expr::Call { function, args, .. }
-                            if function == "div"
-                                && args.len() == 1
-                                && matches!(&args[0], Expr::Name {name:n,..} if n==name) =>
-                        {
-                            Some(1)
-                        }
-                        Expr::Unary {
-                            op: UnaryOp::Neg,
-                            arg,
-                            ..
-                        } => divergence(arg, name).map(|s| -s),
-                        _ => None,
-                    }
-                }
-                let zero = |e: &Expr| matches!(e,Expr::Number {value,..} if *value==0.0);
-                let orientation = if zero(&source.rhs) {
-                    divergence(&source.lhs, flux_name)
-                } else if zero(&source.lhs) {
-                    divergence(&source.rhs, flux_name).map(|s| -s)
-                } else {
-                    None
-                }
-                .ok_or("PORT_FLUX_ORIENTATION_UNDECIDABLE")?;
                 let flux = *self
                     .symbol_names
                     .get(flux_name)
                     .ok_or("PORT_FLUX_UNKNOWN")?;
+                let SemanticDeclarationKind::Equation { lhs, rhs } = equation.kind else {
+                    unreachable!("equation selected above")
+                };
+                let orientation = self.port_flux_orientation(lhs, rhs, flux)?;
                 let mut equal = None;
                 let mut balance = None;
                 for (name, expr) in &port.members {
@@ -2704,10 +2790,10 @@ impl<'a> Elaborator<'a> {
                     self.derivative_type(arg(0), false, diagnostics, span)
                 }
             }
-            "dot" | "inner" => {
+            "dot" | "inner" | "frobenius" => {
                 require_arity(function, args, 2, span, diagnostics);
                 if let (Some(left), Some(right)) = (arg(0), arg(1)) {
-                    contraction_type(left, right, function == "inner", span, diagnostics)
+                    contraction_type(left, right, function != "dot", span, diagnostics)
                 } else {
                     SemanticType::deferred(SemanticRole::Intrinsic)
                 }
@@ -2868,10 +2954,10 @@ impl<'a> Elaborator<'a> {
                 operator: DifferentialOperator::SymmetricGradient,
                 arg: unary_arg(),
             },
-            "dot" | "inner" if args.len() >= 2 => {
+            "dot" | "inner" | "frobenius" if args.len() >= 2 => {
                 let lhs = args[0];
                 let rhs = args[1];
-                let count = if function == "inner" {
+                let count = if function != "dot" {
                     self.expressions[lhs.index()]
                         .ty
                         .axes
@@ -3726,6 +3812,7 @@ pub(crate) const INTRINSIC_CALL_NAMES: &[&str] = &[
     "curl",
     "dot",
     "inner",
+    "frobenius",
     "sin",
     "cos",
     "exp",

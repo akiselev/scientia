@@ -128,3 +128,9 @@ cargo test --all-targets
 ```
 
 Scientia is dual-licensed under MIT or Apache-2.0.
+
+`frobenius(a, b)` explicitly contracts every axis of equally shaped real vector
+or tensor operands without conjugation. It lowers through the existing typed
+Contraction and local-kernel primal/JVP/VJP path. `inner(a, b)` keeps its explicit
+conjugating meaning and remains refused by real64 point lowering; the new spelling
+does not silently reinterpret complex-valued expressions.

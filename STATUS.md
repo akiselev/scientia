@@ -1,5 +1,9 @@
 # Scientia status
 
+2026-09-18 implementation in acceptance:
+SHOW-3 candidate: ports admit one explicitly signed flux divergence plus storage/source terms. Scaled, multiple, hidden and ambiguous divergences refuse. Transient thermal and species-diffusion compiler tests pass (5 focused tests); complete owner gate pending. The explicit nonconjugating `frobenius(a,b)` intrinsic lowers through the existing Contraction IR; tensor-energy and vector-norm primal/VJP tests pass. Conjugating `inner` retains its typed refusal.
+
+
 SC-W2 first matching-interface implementation (2026-09-17): connector, region,
 port, interface and connect declarations; explicit outward flux orientation;
 source-located typed two-port ConnectionSet; quantity-kind/conservation checks;
@@ -149,7 +153,7 @@ snapshots belong to workspace gates; a Scientia commit alone does not pin siblin
 - Point functional lowering is Cartesian/cell-only. Boundary/nested integrals, ambiguous
   domains, nonlocal facet expressions and unsupported tensor constructs refuse with `POINT_*`.
   Explicit conjugating `inner` currently retains FC4's real64 contraction refusal; ordinary
-  vector `dot` and tensor constitutive point values are demonstrated. No silent downgrade.
+  vector `dot`, nonconjugating vector/tensor `frobenius`, and tensor constitutive point values are demonstrated. No silent downgrade.
 - Provider products admit Symbolic/Automatic/AnalyticProvided contracts; None, Piecewise and
   NumericalAllowed require a future explicit derivative policy and currently refuse.
 - General complex kernels, non-Cartesian realization, history-dependent local updates and

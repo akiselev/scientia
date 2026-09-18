@@ -619,3 +619,38 @@ fn tensor_trace_additive_hoisting_keeps_independent_terms_once() {
         assert_eq!(primal(&compiled.root, &supplied), vec![expected]);
     }
 }
+
+#[test]
+fn real_frobenius_tensor_energy_and_vector_norm_keep_primal_and_reverse_products() {
+    for (declarations, expression, supplied, expected, derivative) in [
+        (
+            "constitutive strain = sym_grad(u); constitutive stress = 2 * strain;",
+            "frobenius(strain,stress)",
+            vec![1., 2., 2., 4.],
+            50.,
+            vec![4., 8., 8., 16.],
+        ),
+        ("", "frobenius(u,u)", vec![2., 3.], 13., vec![4., 6.]),
+    ] {
+        let source = format!(
+            "module real_contraction; model Example {{ domain body {{ dimension = 2; coordinates = cartesian; }} field u: unknown vector(2) H1(order=1) on body; {declarations} observable energy {{ integrate({expression}); }} }}"
+        );
+        let compilation = model(&source);
+        let semantic = &compilation.semantic.models[0];
+        let compiled = compile_cell_functional(&compilation.semantic, "Example", "energy").unwrap();
+        let input = values(
+            &compiled.root,
+            &BTreeMap::from([(symbol(semantic, "u"), supplied)]),
+            0.,
+        );
+        assert_eq!(primal(&compiled.root, &input), vec![expected]);
+        let bundle = &compiled.root.kernels.bundles[0];
+        let mut reverse = input;
+        reverse.insert(bundle.vjp.dependent_operands[0].derivative, vec![1.]);
+        let result = run(&bundle.module.kernels[bundle.vjp.kernel_index], &reverse);
+        assert_eq!(
+            result[bundle.vjp.independent_operands[0].derivative.index()],
+            derivative
+        );
+    }
+}
