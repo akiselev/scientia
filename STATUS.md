@@ -1,10 +1,11 @@
 # Scientia status
 
-2026-09-18 implementation in acceptance:
-SHOW-3 candidate: ports admit one explicitly signed flux divergence plus storage/source terms. Scaled, multiple, hidden and ambiguous divergences refuse. Transient thermal and species-diffusion compiler tests pass (5 focused tests); complete owner gate pending. The explicit nonconjugating `frobenius(a,b)` intrinsic lowers through the existing Contraction IR; tensor-energy and vector-norm primal/VJP tests pass. Conjugating `inner` retains its typed refusal.
+2026-09-18 bounded implementation accepted:
+SHOW-3: ports admit one explicitly signed flux divergence plus storage/source terms. Scaled, multiple, hidden and ambiguous divergences refuse. Transient thermal and species-diffusion compiler tests pass (5 focused tests); complete owner gate passed: 197 tests across 32 targets, formatting, check, strict clippy, rustdoc and doctests. Final consumer acceptance passed: 210 tests across 35 targets, with a documented external-fixture target retry and unchanged source. The explicit nonconjugating `frobenius(a,b)` intrinsic lowers through the existing Contraction IR; tensor-energy and vector-norm primal/VJP tests pass. Conjugating `inner` retains its typed refusal.
 
 
-SC-W2 first matching-interface implementation (2026-09-17): connector, region,
+Historical September 17 checkpoint (superseded by the accepted extension above):
+SC-W2 first matching-interface implementation: connector, region,
 port, interface and connect declarations; explicit outward flux orientation;
 source-located typed two-port ConnectionSet; quantity-kind/conservation checks;
 Open boundary receipts. Unclosed/overlapping/wrong-kind/duplicate-argument and
@@ -166,3 +167,5 @@ snapshots belong to workspace gates; a Scientia commit alone does not pin siblin
   SC-W1 kernel-level composition remains narrower evidence than end-to-end declared solves.
 - Historical compiler implementations and removed compatibility layers remain in Git history,
   not as alternate authorities. Keep this ledger compact; workspace plans own lane ordering.
+
+Final cross-repository evidence: [September 18 acceptance](../sinbad/docs/validation/2026-09-18-assembly/README.md).
