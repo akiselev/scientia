@@ -1,5 +1,52 @@
 # Scientia status
 
+2026-10-19 W11 lane S1 (working clone on top of W12 L1 `7819884`; not yet integrated):
+Malleus symbolic export (`malleus-symbolic/1`, Malleus `f987944`) imported into Resolvent terms
+and cross-checked against the Scientia source, in `src/symbolic_import.rs`.
+
+## W11 S1 symbolic import and exact cross-checks
+
+- `import_symbolic(export, &SymbolMap, &mut TermStore)`: `(operand, element)` -> Resolvent
+  symbol from Scientia provenance (`Scientia`/input name; FV `Scientia.fv` `u_minus`, `u_plus`,
+  `n<axis>`; derivative `Scientia.direction|cotangent|accumulator`). Constants exact (checked
+  against `bits`), `fma` = exact `a*b+c`, `select` and `abs/min/max` = one-case `Piecewise`,
+  `tan` = `sin/cos`, `pow` needs an integral constant exponent. Refusals:
+  `SYMBOLIC_OP_UNREPRESENTABLE` (floor, ceil, atan2, real pow), `SYMBOLIC_INPUT_UNMAPPED`,
+  `SYMBOLIC_SCHEMA_INVALID`, `SYMBOLIC_CONSTANT_INCONSISTENT`.
+- Sources rebuilt independently (`KernelSources`): property definitions, point-expression
+  integrands (definitions inlined), FV `F.n`, `|d(F.n)/du|` from Resolvent `Differentiate` (not
+  the Malleus JVP) and central/LLF/HLL face fluxes. Literals use the kernel's binary64 value;
+  `rounded_literals` counts inexact decimals. Authored fluxes, boundary/source/limiter kernels,
+  providers and time refuse `SYMBOLIC_SOURCE_UNSUPPORTED`.
+- `check_equivalence`: `CanonicalEquality` (equal Resolvent `Simplify` digests; proof modulo
+  the canonicalizer, which does not expand) else `ExactSamples` (exact rational evaluation at 24
+  deterministic Halton points per check; partiality must agree; transcendental samples decided
+  by canonical digests of the substituted terms, else `SYMBOLIC_EQUIVALENCE_UNDECIDED`).
+  Sampling is evidence, not proof. Mismatch: `SYMBOLIC_EQUIVALENCE_MISMATCH`.
+- Derivatives: Malleus JVP/VJP exports vs `sum_j df/dx_j*d_j` / `acc + sum_i df_i/dx_j*w_i`
+  from Resolvent. Piecewise terms are hoisted to the root before `Differentiate` (Resolvent
+  differentiates piecewise only there). FV JVPs go through `FvKernel::differentiate`; D6
+  refusals are recorded as `CheckOutcome::Refused`.
+- Enclosures: Malleus naive/centered/affine interval kernels on the domain box and its two
+  halves must contain the exact source value at every corner and Halton point (sampled
+  containment, not the exact range). Lowering refusals (div, abs, exp...) are recorded.
+- Report kind `SymbolicVerificationReport` (`scientia-symbolic-verification/1`): entries with
+  kernel digest, `KernelProvenance` (property value/tangent, point expression, FV role),
+  round-trip method, derivative and enclosure evidence, digest-checked. It is standalone: no new
+  `VerificationObligationKind`, no existing identity changed (`w11_symbolic_identity_pins.rs`
+  pins property kernel identities/bytes, point-expression and LLF program digests/bytes computed
+  before the module was added).
+- Evidence: `tests/w11_symbolic_import.rs` (8 tests): thermal polynomial (round trip, JVP, VJP,
+  tangent, all three enclosures), shear modulus `E/(2(1+nu))`, inexact decimals, Arrhenius
+  `exp`; point-expression misfit with bundle JVP/VJP/parameter kernels; linear advection 1-D
+  central/LLF, 2-D LLF/HLL and Burgers central incl. face JVPs; Burgers LLF D6 refusal; a
+  perturbed constant and a swapped LLF jump are detected; fma/floor/unmapped; report identity.
+- Gate: `cargo test -p scientia` 217 passed (208 before + 9), fmt check, all-target clippy
+  `-D warnings`, rustdoc `-D warnings`; opt-level 2, `CARGO_INCREMENTAL=0`, test debug 0.
+- Open: vector/tensor operands (non-scalar elements are unmapped), provider calls, authored
+  and MUSCL/limiter kernels, Resolvent-certified ranges (only sampled containment), and a
+  Resolvent `Abs/Min/Max` head (would replace the piecewise encoding).
+
 2026-10-19 W12 lane L1 (SV2-C1a, working clone; not yet integrated or consumer-accepted):
 conservation-law semantics and finite-volume face kernels in `src/conservation.rs`.
 

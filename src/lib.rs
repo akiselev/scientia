@@ -29,6 +29,7 @@ pub mod source;
 pub mod structural;
 pub mod structure;
 pub mod structured;
+pub mod symbolic_import;
 pub mod system;
 pub mod system_operator;
 pub mod tensor;
@@ -162,6 +163,15 @@ pub use structured::{
     StructuredKernelReceipt, StructuredLoweringError, StructuredNumericPolicyReceipt,
     StructuredOperatorKernels, StructuredPointKernelBundle, lower_operator_kernels,
     lower_operator_kernels_with_policy,
+};
+pub use symbolic_import::{
+    CheckOutcome, EnclosureEvidence, EnclosureLowering, EnclosureOutcome, EquivalenceMethod,
+    ImportStatistics, ImportedKernel, ImportedOutput, KernelProvenance, KernelSources,
+    SYMBOLIC_VERIFICATION_SCHEMA, SampleDomain, SymbolMap, SymbolicDerivativeEvidence,
+    SymbolicVerificationEntry, SymbolicVerificationError, SymbolicVerificationReport,
+    check_equivalence, fv_kernel_sources, import_symbolic, point_expression_sources,
+    property_value_sources, verify_conservation_program, verify_export, verify_point_expression,
+    verify_property_kernel,
 };
 pub use system::{
     OPERATOR_SYSTEM_SCHEMA, OperatorBlockCoordinate, OperatorSystem, OperatorSystemBlock,
