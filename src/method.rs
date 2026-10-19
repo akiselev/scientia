@@ -224,6 +224,36 @@ pub fn compile_conservation_law_method(
     conserved_name: &str,
     numerical_flux: AffineMethodKernelSpec,
 ) -> Result<MethodProgram, MethodCompileError> {
+    let (model, equation, method) =
+        select_conservation_law(module, model_name, equation_name, conserved_name)?;
+    let conserved = method.conserved;
+    let kernel = compile_affine_kernel(numerical_flux)?;
+    finish(
+        module,
+        model,
+        MethodProgramKind::ConservationLawFiniteVolume(method),
+        vec![equation.id],
+        vec![conserved],
+        Some(kernel),
+    )
+}
+
+/// The structural FC10 selection shared by the affine method program and the conservation-law
+/// lowering (`crate::conservation`): a `DG` conserved field, its time derivative and the
+/// conservative divergence whose argument is the flux.
+pub(crate) fn select_conservation_law<'a>(
+    module: &'a SemanticModule,
+    model_name: &str,
+    equation_name: &str,
+    conserved_name: &str,
+) -> Result<
+    (
+        &'a SemanticModel,
+        &'a SemanticDeclaration,
+        ConservationLawMethod,
+    ),
+    MethodCompileError,
+> {
     let model = find_model(module, model_name)?;
     let equation = find_declaration(model, equation_name, "equation", |role| {
         matches!(role, SemanticRole::Equation)
@@ -270,22 +300,18 @@ pub fn compile_conservation_law_method(
         SemanticExprKind::Differential { arg, .. } => arg,
         _ => unreachable!("differential search returns a differential expression"),
     };
-    let kernel = compile_affine_kernel(numerical_flux)?;
-    finish(
-        module,
+    Ok((
         model,
-        MethodProgramKind::ConservationLawFiniteVolume(ConservationLawMethod {
+        equation,
+        ConservationLawMethod {
             domain,
             equation: equation.id,
             conserved,
             time_derivative,
             flux_divergence,
             flux,
-        }),
-        vec![equation.id],
-        vec![conserved],
-        Some(kernel),
-    )
+        },
+    ))
 }
 
 pub fn compile_finite_difference_method(

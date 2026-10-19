@@ -82,6 +82,9 @@ pub enum OrderBasis {
 #[serde(rename_all = "snake_case")]
 pub enum ConservationRelation {
     GlobalBalance,
+    /// Finite volume (SV2-C1a): `d/dt Σ|Vᵢ|uᵢ = −Σ_boundary |f|F*_f + Σ|Vᵢ|Sᵢ` per step, interior
+    /// face fluxes cancelling pairwise, to a round-off bound.
+    DiscreteFluxBalance,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -134,6 +137,24 @@ pub enum VerificationObligationKind {
         pair: String,
         constrained: Option<SymbolId>,
         multiplier: Option<SymbolId>,
+    },
+    /// FV (SV2-C1a): `F*(u, u, n) = F(u)·n` for the lowered numerical flux of `equation`.
+    NumericalFluxConsistency {
+        equation: DeclarationId,
+    },
+    /// FV (SV2-C1a): `F*(u⁻, u⁺, n) = −F*(u⁺, u⁻, −n)`, the facet swap covariance.
+    NumericalFluxAntisymmetry {
+        equation: DeclarationId,
+    },
+    /// FV (SV2-C1a): `dt ≤ C·min |Vᵢ| / Σ_f |f|λ_f` with `C` at most the integrator's SSP
+    /// coefficient times `forward_euler_limit` of the spatial scheme.
+    CflBound {
+        field: SymbolId,
+        forward_euler_limit: f64,
+    },
+    /// FV (SV2-C1a): total variation of `field` does not increase under the CFL bound.
+    TotalVariationDiminishing {
+        field: SymbolId,
     },
     /// Not part of contract C6.1's kind list: a content-free carrier for obligations whose
     /// `unsupported` field is set (see `VERIFY_UNSUPPORTED_ANNOTATION`). Every other kind now
@@ -888,7 +909,7 @@ pub fn derive_verification_profiles(compilation: &SemanticCompilation) -> Vec<Ve
 }
 
 #[allow(clippy::too_many_arguments)]
-fn make_obligation(
+pub(crate) fn make_obligation(
     parent_semantic_digest: &str,
     model: &str,
     source_span: SourceSpan,

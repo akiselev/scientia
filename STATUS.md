@@ -1,5 +1,75 @@
 # Scientia status
 
+2026-10-19 W12 lane L1 (SV2-C1a, working clone; not yet integrated or consumer-accepted):
+conservation-law semantics and finite-volume face kernels in `src/conservation.rs`.
+
+## SV2-C1a conservation laws and FV face kernels
+
+- `compile_conservation_law_system(module, model, equation, conserved)` ->
+  `ConservationLawSystem` (`scientia-conservation-law/1`). It reuses the unchanged FC10
+  selection (`select_conservation_law`, shared with `compile_conservation_law_method`), requires
+  a scalar `DG` conserved field, normalizes `dt(u) + div(flux_sign*F) = S` from signed additive
+  terms and records `dirichlet` boundaries as `GhostState` and `neumann` ones as
+  `PrescribedFlux`. `check_boundary_closure(exterior, periodic)` refuses unclosed regions.
+- `FvMethodIntent` (`scientia-fv-method-intent/1`, decision D1): numerical flux `central |
+  local_lax_friedrichs | hll | authored{declaration, tolerance}`, reconstruction `constant |
+  muscl{variables, gradient, limiter}`, source `pointwise`, positivity `none |
+  zhang_shu_scaling`. JSON is pinned in `sv2c1_conservation.rs`.
+- `lower_conservation_law(module, system, intent, samples)` -> `ConservationLawProgram`
+  (`scientia-conservation-law-program/1`) with `FvKernel`s (`scientia-fv-kernel/1`):
+  `physical_flux_normal` (lowered from the semantic F, not a coefficient table),
+  `characteristic_speed` (`|d(F.n)/du|` from the Malleus JVP, inlined), `face_flux` (a Malleus
+  facet pair: `u_minus`/`u_plus` partnered cells, normals `Odd`, data `Even`, flux `Odd`),
+  boundary ghost/prescribed-flux kernels, `source`, and a Sweby limiter `phi(r)` (minmod, van
+  Leer, MC, superbee). Every operand has an `FvOperandMeaning`; data are listed in `data`.
+- Generic families only (D3). Authored fluxes are scalar `constitutive` two-point expressions
+  over `trace_minus/trace_plus`, `jump` (minus - plus), `average`, `normal_component[_minus]`
+  (`G.n`) and `normal_component_plus` (`G+.(-n)`). Consistency and antisymmetry
+  (`malleus::check_facet_swap_symmetry`) are checked at caller samples; generic fluxes check at
+  tolerance 0 when samples are given.
+- D6 (FV path only): `FvKernel::differentiate` refuses a request whose independents reach the
+  switch of `abs/min/max/floor/ceil` (`nonsmooth_sites`, dependency through locals). `select`
+  is no kink. Smooth flux kernels and smooth directions (state direction of linear-advection LLF)
+  keep their derivatives.
+- Obligations (new `VerificationObligationKind` variants): `NumericalFluxConsistency`,
+  `NumericalFluxAntisymmetry`, `CflBound{field, forward_euler_limit}` (1 constant, 1/2 MUSCL),
+  `TotalVariationDiminishing` (LLF/HLL with constant or Sweby-limited MUSCL), and
+  `Conservation{relation: DiscreteFluxBalance}` (new `ConservationRelation` variant).
+- Refusal codes: `FV_METHOD_SELECTION`, `FV_SYSTEM_UNSUPPORTED`, `FV_STORAGE_SCALED`,
+  `FV_FLUX_NOT_CONSERVATIVE`, `FV_FLUX_SHAPE`, `FV_FLUX_UNSUPPORTED`,
+  `FV_FLUX_FIELD_UNSUPPORTED`, `FV_FLUX_PROVIDER_UNSUPPORTED`, `FV_DIFFUSIVE_FLUX_UNSUPPORTED`,
+  `FV_BOUNDARY_UNSUPPORTED`, `FV_BOUNDARY_UNCLOSED`, `FV_SOURCE_UNSUPPORTED`,
+  `FV_AUTHORED_FLUX_{MISSING,SHAPE,UNTRACED,UNCHECKED,INCONSISTENT,NOT_ANTISYMMETRIC}`,
+  `FV_PRIMITIVE_MAP_MISSING`, `FV_LIMITER_UNSUPPORTED`, `FV_POSITIVITY_UNSUPPORTED`,
+  `FV_NONSMOOTH_DERIVATIVE_REFUSED`, `FV_SAMPLE_INVALID`, `FV_KERNEL_INVALID`,
+  `FV_DERIVATIVE_FAILED`, `FV_IDENTITY_MISMATCH`.
+- Evidence: `tests/sv2c1_conservation.rs` (10 tests: LLF/HLL/central equal hand formulas
+  bitwise on 64 samples incl. signed zero and ties; exact swap symmetry for 3 families x 2
+  laws; authored Rusanov accepted, one-sided/doubled/untraced refused; D6 refusals and kept
+  smooth JVP; boundary/source/limiter values; `run_batch` face block with stride-0 data equals
+  per-face interpreter bitwise; obligations and identity). `tests/sv2c1_identity_pins.rs` pins
+  the FC10 affine FV program digest, kernel digest and serialized bytes from before the change.
+  Fixture: `tests/fixtures/scalar-conservation.res` (1-D/2-D linear advection, Burgers with a
+  source, authored 2-D fluxes, a diffusive refusal case).
+- Open (not in L1): systems/`SpectralBound`/declared speeds (C1b); Barth-Jespersen and
+  Venkatakrishnan limiters; primitive maps; Zhang-Shu; diffusive TPFA; state-dependent providers
+  and coefficient fields in fluxes; `RiemannProblem` for `@shock_tube`; a `.res` normal symbol
+  (1-D authored fluxes cannot use `normal_component` on a scalar flux today).
+- Consumers: Finitum (L4) binds face-flux operands by `FvOperandMeaning` (minus = owner cell,
+  plus = neighbour or ghost from the region's `Ghost` kernel; `PrescribedBoundaryFlux` replaces
+  the face flux), runs `face_flux` through `run_batch` (data stride 0), realizes
+  `DiscreteFluxBalance`/`CflBound` from `characteristic_speed`, and uses `limiter` for MUSCL.
+  Sinbad (L7) parses `[discretization]` into `FvMethodIntent` (serde shape above), supplies
+  samples for authored fluxes, and must handle the new obligation kinds (its matches on
+  `VerificationObligationKind` gain four variants). There is no nonsmooth policy field: FV
+  derivatives through kinks are always refused.
+- Lane gate: `cargo test -p scientia` 208 passed across 35 targets (also with
+  `SINBAD_WORKSPACE=/projects/sinbad`), fmt check, all-target clippy `-D warnings`, rustdoc
+  `-D warnings`.
+- Build note: the W11 Malleus pin (`1585fc4`) adds `libm` to `Cargo.lock`. Lane validation ran
+  with `CARGO_PROFILE_TEST_DEBUG=0 CARGO_INCREMENTAL=0` (disk at 100%), opt-level 2.
+
+
 2026-09-18 bounded implementation accepted:
 SHOW-3: ports admit one explicitly signed flux divergence plus storage/source terms. Scaled, multiple, hidden and ambiguous divergences refuse. Transient thermal and species-diffusion compiler tests pass (5 focused tests); complete owner gate passed: 197 tests across 32 targets, formatting, check, strict clippy, rustdoc and doctests. Final consumer acceptance passed: 210 tests across 35 targets, with a documented external-fixture target retry and unchanged source. The explicit nonconjugating `frobenius(a,b)` intrinsic lowers through the existing Contraction IR; tensor-energy and vector-norm primal/VJP tests pass. Conjugating `inner` retains its typed refusal.
 
@@ -18,10 +88,8 @@ Quantitas dependency: `c4c05b482a4fd8996dfdccac12316100a3b7f18d`.
 Evidence: `docs/validation/2026-09-17-sc-w2/`.
 
 
-Updated: 2026-09-17
+Updated: 2026-10-19 (SV2-C1a section above); earlier entries 2026-09-17/18.
 Branch: `master`.
-Milestone: SC-W2 first matching-interface compiler gate;
-Sinbad consumer acceptance remains a separate gate.
 
 ## Ownership
 

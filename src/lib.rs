@@ -8,6 +8,7 @@
 
 pub mod binding_slots;
 pub mod composition;
+pub mod conservation;
 pub mod derivative;
 pub mod evidence;
 pub mod form_interpreter;
@@ -44,6 +45,15 @@ pub use composition::{
     SysRegionId, SysRes, SysResId, SysVar, SysVarId, SysVarKind, SystemBind, SystemCompilation,
     SystemDependency, SystemDomain, SystemError, SystemOutput, SystemRegion, SystemSlot,
     SystemSlotManifest, VariableOrigin, compile_model_system, compile_system,
+};
+pub use conservation::{
+    BoundaryFluxSemantics, CONSERVATION_LAW_PROGRAM_SCHEMA, CONSERVATION_LAW_SCHEMA,
+    ConservationLawError, ConservationLawProgram, ConservationLawSystem, FV_KERNEL_SCHEMA,
+    FV_METHOD_INTENT_SCHEMA, FluxClaim, FluxClaimCheck, FvDatum, FvDatumSource, FvFluxSample,
+    FvKernel, FvKernelRole, FvMethodIntent, FvOperandMeaning, GradientScheme, LimiterFamily,
+    NonsmoothKind, NonsmoothSite, NumericalFluxIntent, PositivityIntent, ReconstructionIntent,
+    ReconstructionVariables, SignedTerm, SourceTreatment, SpeedSource, check_smooth_request,
+    compile_conservation_law_system, lower_conservation_law, nonsmooth_sites, run_point,
 };
 pub use derivative::{
     ActiveSet, Control, DERIVATIVE_REQUEST_SCHEMA, DerivativeConvention, DerivativeDependence,
