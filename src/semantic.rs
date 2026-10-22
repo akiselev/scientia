@@ -3293,8 +3293,17 @@ impl<'a> Elaborator<'a> {
                 );
             }
             let first = &self.expressions[first.index()].ty;
+            // A literal of equal-extent vectors is a row-major tensor literal (SV2-C1b:
+            // `[[F00, F01], [F10, F11]]`); any other element shape makes a vector literal.
+            let shape = match first.shape {
+                SemanticShape::Numeric(ValueShape::Vector(cols)) => ValueShape::Tensor {
+                    rows: elements.len() as u8,
+                    cols,
+                },
+                _ => ValueShape::Vector(elements.len() as u8),
+            };
             let mut ty = SemanticType::numeric(
-                ValueShape::Vector(elements.len() as u8),
+                shape,
                 first.dimension,
                 first.frame.clone(),
                 SemanticRole::Literal,

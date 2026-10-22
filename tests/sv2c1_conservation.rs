@@ -106,6 +106,8 @@ fn eval(program: &ConservationLawProgram, kernel: &FvKernel, sample: &FvFluxSamp
                 FvOperandMeaning::Datum { datum } => sample.data[&program.data[*datum].name],
                 FvOperandMeaning::SlopeRatio => sample.minus,
                 FvOperandMeaning::Output => 0.0,
+                // SV2-C1b system operands never appear on scalar kernels.
+                _ => unreachable!("scalar kernel operand"),
             }]
         })
         .collect::<Vec<_>>();

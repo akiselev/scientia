@@ -68,6 +68,13 @@ pub struct SignedTerm {
 #[serde(rename_all = "snake_case")]
 pub enum SpeedSource {
     DerivedScalarTangent,
+    /// SV2-C1b: the `.res`-declared absolute maximum signal speed `λ_max(U, n)` of a system
+    /// (`@wave_speeds(absolute_maximum = ...)`), used by LLF and the CFL bound.
+    DeclaredMaximum,
+    /// SV2-C1b: `.res`-declared signed extreme speeds `s_min(U, n)`, `s_max(U, n)`
+    /// (`@wave_speeds(minimum = ..., maximum = ...)`) for HLL, with a declared absolute
+    /// maximum for the CFL bound.
+    DeclaredSigned,
 }
 
 /// The flux semantics of one declared boundary. Periodicity is a mesh property (decision D2)
@@ -179,6 +186,36 @@ pub fn compile_conservation_law_system(
             ),
         ));
     }
+    let (flux_sign, source_terms) = normalize_law(model, equation, &method)?;
+    let boundaries = read_boundaries(model, method.conserved)?;
+    let source_semantic_digest = Digest {
+        algorithm: "blake3".into(),
+        hex: semantic_arena_digest(module),
+    };
+    let mut system = ConservationLawSystem {
+        schema: CONSERVATION_LAW_SCHEMA.into(),
+        model: model.name.clone(),
+        source_semantic_digest,
+        spatial_dimension: model.domains[method.domain.index()].spatial_dimension,
+        method,
+        flux_sign,
+        source_terms,
+        characteristic_speed: SpeedSource::DerivedScalarTangent,
+        boundaries,
+        artifact_digest: empty_digest(),
+    };
+    system.artifact_digest = span_independent_digest(&system);
+    Ok(system)
+}
+
+/// Normalize `equation` to `dt(u) + div(flux_sign·F) = Σ sign·term` (shared by the scalar law
+/// and SV2-C1b systems): the time derivative and the flux divergence must be unscaled additive
+/// terms; every other term is a source moved to the right-hand side.
+pub(crate) fn normalize_law(
+    model: &SemanticModel,
+    equation: &SemanticDeclaration,
+    method: &ConservationLawMethod,
+) -> Result<(i8, Vec<SignedTerm>), ConservationLawError> {
     let SemanticDeclarationKind::Equation { lhs, rhs } = equation.kind else {
         unreachable!("selection returns an equation");
     };
@@ -237,6 +274,15 @@ pub fn compile_conservation_law_system(
             sign: -sign * time_sign,
         })
         .collect();
+    Ok((flux_sign * time_sign, source_terms))
+}
+
+/// The `dirichlet` (ghost state) and `neumann` (prescribed normal flux) closures declared for
+/// `conserved`, sorted by region name; one closure per region.
+pub(crate) fn read_boundaries(
+    model: &SemanticModel,
+    conserved: SymbolId,
+) -> Result<Vec<BoundaryFluxSemantics>, ConservationLawError> {
     let mut boundaries = Vec::new();
     for declaration in &model.declarations {
         let SemanticDeclarationKind::BoundaryCondition {
@@ -249,7 +295,7 @@ pub fn compile_conservation_law_system(
         else {
             continue;
         };
-        if *target != Some(method.conserved) {
+        if *target != Some(conserved) {
             continue;
         }
         let region_name = model.regions[region.index()].name.clone();
@@ -287,27 +333,15 @@ pub fn compile_conservation_law_system(
             "a region carries more than one boundary closure",
         ));
     }
-    let source_semantic_digest = Digest {
-        algorithm: "blake3".into(),
-        hex: semantic_arena_digest(module),
-    };
-    let mut system = ConservationLawSystem {
-        schema: CONSERVATION_LAW_SCHEMA.into(),
-        model: model.name.clone(),
-        source_semantic_digest,
-        spatial_dimension: model.domains[method.domain.index()].spatial_dimension,
-        method,
-        flux_sign: flux_sign * time_sign,
-        source_terms,
-        characteristic_speed: SpeedSource::DerivedScalarTangent,
-        boundaries,
-        artifact_digest: empty_digest(),
-    };
-    system.artifact_digest = span_independent_digest(&system);
-    Ok(system)
+    Ok(boundaries)
 }
 
-fn additive_terms(model: &SemanticModel, id: ExprId, sign: i8, out: &mut Vec<(ExprId, i8)>) {
+pub(crate) fn additive_terms(
+    model: &SemanticModel,
+    id: ExprId,
+    sign: i8,
+    out: &mut Vec<(ExprId, i8)>,
+) {
     match model.expressions[id.index()].kind {
         SemanticExprKind::Binary {
             op: BinaryOp::Add,
@@ -330,11 +364,11 @@ fn additive_terms(model: &SemanticModel, id: ExprId, sign: i8, out: &mut Vec<(Ex
     }
 }
 
-fn is_zero_literal(model: &SemanticModel, id: ExprId) -> bool {
+pub(crate) fn is_zero_literal(model: &SemanticModel, id: ExprId) -> bool {
     matches!(model.expressions[id.index()].kind, SemanticExprKind::Number { value, .. } if value == 0.0)
 }
 
-fn contains_differential(
+pub(crate) fn contains_differential(
     model: &SemanticModel,
     root: ExprId,
     predicate: impl Fn(DifferentialOperator) -> bool,
@@ -488,6 +522,21 @@ pub enum FvOperandMeaning {
     /// Slope ratio input of a Sweby limiter.
     SlopeRatio,
     Output,
+    /// SV2-C1b: slot `component` of a system's conserved state vector; `side` as for `State`.
+    StateComponent {
+        side: Option<FacetSide>,
+        component: usize,
+    },
+    /// SV2-C1b: slot `component` of a system's primitive vector `W` (inverse-map input).
+    PrimitiveComponent {
+        component: usize,
+    },
+    /// SV2-C1b: output `component` of a multi-output kernel: a state-vector slot for face
+    /// flux, ghost, prescribed-flux, source and inverse-map kernels; a primitive slot for the
+    /// forward map.
+    OutputComponent {
+        component: usize,
+    },
 }
 
 /// External model data read by the lowered kernels.
@@ -539,6 +588,16 @@ pub enum FvKernelRole {
     PrescribedBoundaryFlux,
     Source,
     Limiter,
+    /// SV2-C1b: declared signed minimum speed `s_min(U, n)` (HLL).
+    SignalSpeedMinimum,
+    /// SV2-C1b: declared signed maximum speed `s_max(U, n)` (HLL).
+    SignalSpeedMaximum,
+    /// SV2-C1b: `W(U)`, conserved to primitive.
+    PrimitiveForward,
+    /// SV2-C1b: `U(W)`, primitive to conserved.
+    PrimitiveInverse,
+    /// SV2-C1b: minimum margin of the declared strictly-positive expressions.
+    Admissibility,
 }
 
 /// One lowered kernel. `facet_roles` is set exactly for the facet-pair face flux.
@@ -694,14 +753,14 @@ impl From<MethodCompileError> for ConservationLawError {
     }
 }
 
-fn fv_error(code: &'static str, message: impl ToString) -> ConservationLawError {
+pub(crate) fn fv_error(code: &'static str, message: impl ToString) -> ConservationLawError {
     ConservationLawError {
         code,
         message: message.to_string(),
     }
 }
 
-fn empty_digest() -> Digest {
+pub(crate) fn empty_digest() -> Digest {
     Digest {
         algorithm: "blake3".into(),
         hex: String::new(),
@@ -732,7 +791,7 @@ pub fn lower_conservation_law(
     let mut data = DataTable::default();
     let lower = Lower {
         model,
-        conserved: system.method.conserved,
+        components: vec![(system.method.conserved, 0, 1)],
         dimension,
     };
 
@@ -894,8 +953,8 @@ pub fn lower_conservation_law(
                     &mut data,
                     authored,
                     &StateContext::Facet {
-                        minus,
-                        plus,
+                        minus: vec![minus],
+                        plus: vec![plus],
                         side: None,
                         normal: normal.clone(),
                     },
@@ -1046,7 +1105,7 @@ pub fn lower_conservation_law(
     Ok(program)
 }
 
-fn validate_intent(intent: &FvMethodIntent) -> Result<Option<LimiterFamily>, ConservationLawError> {
+pub(crate) fn validate_intent(intent: &FvMethodIntent) -> Result<Option<LimiterFamily>, ConservationLawError> {
     if let PositivityIntent::ZhangShuScaling { .. } = intent.positivity {
         return Err(fv_error(
             "FV_POSITIVITY_UNSUPPORTED",
@@ -1082,7 +1141,7 @@ fn validate_intent(intent: &FvMethodIntent) -> Result<Option<LimiterFamily>, Con
 }
 
 /// Sweby limiter `φ(r)` as a point kernel.
-fn limiter_kernel(limiter: LimiterFamily) -> Result<FvKernel, ConservationLawError> {
+pub(crate) fn limiter_kernel(limiter: LimiterFamily) -> Result<FvKernel, ConservationLawError> {
     let mut builder = KernelBuilder::new(&format!("limiter_{limiter:?}").to_lowercase());
     let r = ScalarExpr::Load(builder.operand("r", FvOperandMeaning::SlopeRatio));
     let c = ScalarExpr::Constant;
@@ -1108,7 +1167,7 @@ fn limiter_kernel(limiter: LimiterFamily) -> Result<FvKernel, ConservationLawErr
     builder.finish(FvKernelRole::Limiter, value, None)
 }
 
-fn authored_declaration(model: &SemanticModel, name: &str) -> Result<ExprId, ConservationLawError> {
+pub(crate) fn authored_declaration(model: &SemanticModel, name: &str) -> Result<ExprId, ConservationLawError> {
     model
         .declarations
         .iter()
@@ -1131,13 +1190,25 @@ fn authored_declaration(model: &SemanticModel, name: &str) -> Result<ExprId, Con
 // ---------------------------------------------------------------------------------------------
 
 #[derive(Clone)]
-enum StateContext {
+pub(crate) enum StateContext {
+    /// A scalar law's state at one point.
     Point(OperandId),
+    /// A facet pair; `minus`/`plus` hold one operand per state slot (one for a scalar law).
     Facet {
-        minus: OperandId,
-        plus: OperandId,
+        minus: Vec<OperandId>,
+        plus: Vec<OperandId>,
         side: Option<FacetSide>,
         normal: Vec<OperandId>,
+    },
+    /// SV2-C1b: a system's state vector at one point, with the face normal available to
+    /// `normal_component` when `normal` is set.
+    System {
+        state: Vec<OperandId>,
+        normal: Option<Vec<OperandId>>,
+    },
+    /// SV2-C1b: the inverse primitive map; `variables[i]` binds the i-th primitive symbol.
+    Primitive {
+        variables: Vec<(SymbolId, OperandId)>,
     },
 }
 
@@ -1150,26 +1221,34 @@ impl StateContext {
                 normal,
                 ..
             } => Ok(Self::Facet {
-                minus: *minus,
-                plus: *plus,
+                minus: minus.clone(),
+                plus: plus.clone(),
                 side: Some(new),
                 normal: normal.clone(),
             }),
-            Self::Point(_) => Err(fv_error(
+            Self::Point(_) | Self::System { .. } | Self::Primitive { .. } => Err(fv_error(
                 "FV_FLUX_UNSUPPORTED",
                 "facet traces are only meaningful in an authored numerical flux",
             )),
         }
     }
+
+    fn normal(&self) -> Option<&[OperandId]> {
+        match self {
+            Self::Facet { normal, .. } => Some(normal),
+            Self::System { normal, .. } => normal.as_deref(),
+            Self::Point(_) | Self::Primitive { .. } => None,
+        }
+    }
 }
 
 #[derive(Default)]
-struct DataTable {
+pub(crate) struct DataTable {
     data: Vec<FvDatum>,
 }
 
 impl DataTable {
-    fn index(&mut self, name: String, source: FvDatumSource) -> usize {
+    pub(crate) fn index(&mut self, name: String, source: FvDatumSource) -> usize {
         if let Some(index) = self.data.iter().position(|datum| datum.source == source) {
             return index;
         }
@@ -1177,18 +1256,27 @@ impl DataTable {
         self.data.len() - 1
     }
 
-    fn into_data(self) -> Vec<FvDatum> {
+    pub(crate) fn into_data(self) -> Vec<FvDatum> {
         self.data
     }
 }
 
-struct Lower<'a> {
-    model: &'a SemanticModel,
-    conserved: SymbolId,
-    dimension: u8,
+pub(crate) struct Lower<'a> {
+    pub(crate) model: &'a SemanticModel,
+    /// `(field, offset, components)` of every conserved field in state-vector order.
+    pub(crate) components: Vec<(SymbolId, usize, usize)>,
+    pub(crate) dimension: u8,
 }
 
 impl Lower<'_> {
+    /// `(offset, components)` of a conserved field.
+    fn state_slot(&self, symbol: SymbolId) -> Option<(usize, usize)> {
+        self.components
+            .iter()
+            .find(|(field, _, _)| *field == symbol)
+            .map(|(_, offset, count)| (*offset, *count))
+    }
+
     /// `flux_sign · Σ F_i n_i`, left to right.
     fn flux_normal(
         &self,
@@ -1207,7 +1295,7 @@ impl Lower<'_> {
         })
     }
 
-    fn expr(
+    pub(crate) fn expr(
         &self,
         builder: &mut KernelBuilder,
         data: &mut DataTable,
@@ -1248,15 +1336,53 @@ impl Lower<'_> {
                 })
             }
             SemanticExprKind::Vector { elements } => {
+                // Scalars make a vector; equal-extent vectors make a row-major tensor
+                // (SV2-C1b: `[[F00, F01], [F10, F11]]`, row = conserved component).
                 let mut values = Vec::with_capacity(elements.len());
+                let mut extent = None;
                 for element in elements {
                     let element = self.expr(builder, data, *element, context)?;
-                    if element.len() != 1 {
-                        return unsupported("a nested vector");
+                    if element.is_empty() || *extent.get_or_insert(element.len()) != element.len()
+                    {
+                        return unsupported("a ragged vector literal");
                     }
                     values.extend(element);
                 }
                 Ok(values)
+            }
+            SemanticExprKind::Index { value, indices } => {
+                // SV2-C1b: literal indices into the row-major components of `value`.
+                let components = self.expr(builder, data, *value, context)?;
+                let extents = self.model.expressions[value.index()]
+                    .ty
+                    .axes
+                    .iter()
+                    .map(|axis| usize::from(axis.extent))
+                    .collect::<Vec<_>>();
+                if extents.is_empty()
+                    || extents.len() < indices.len()
+                    || extents.iter().product::<usize>() != components.len()
+                {
+                    return Err(fv_error(
+                        "FV_FLUX_SHAPE",
+                        format!("expression {id} indexes a value whose axes do not match its components"),
+                    ));
+                }
+                let mut offset = 0;
+                let mut stride = components.len();
+                for (index, extent) in indices.iter().zip(&extents) {
+                    let position = match self.model.expressions[index.index()].kind {
+                        SemanticExprKind::Number { value, .. }
+                            if value >= 0.0 && value.fract() == 0.0 && (value as usize) < *extent =>
+                        {
+                            value as usize
+                        }
+                        _ => return unsupported("a non-literal or out-of-range index"),
+                    };
+                    stride /= extent;
+                    offset += position * stride;
+                }
+                Ok(components[offset..offset + stride].to_vec())
             }
             SemanticExprKind::Contraction {
                 lhs,
@@ -1379,25 +1505,33 @@ impl Lower<'_> {
                     .collect())
             }
             SemanticExprKind::NormalComponent { value, side } => {
-                let StateContext::Facet { normal, .. } = context else {
-                    return unsupported("a normal component outside an authored flux");
+                let Some(normal) = context.normal() else {
+                    return unsupported("a normal component outside an authored flux or a declared face expression");
                 };
-                let normal = normal.clone();
+                let normal = normal.to_vec();
                 let (inner, negate) = match side {
                     TraceSide::Exterior => (context.clone(), false),
                     TraceSide::Minus => (context.with_side(FacetSide::Minus)?, false),
                     TraceSide::Plus => (context.with_side(FacetSide::Plus)?, true),
                 };
                 let components = self.expr(builder, data, *value, &inner)?;
-                if components.len() != usize::from(self.dimension) {
+                let dimension = usize::from(self.dimension);
+                if components.is_empty() || components.len() % dimension != 0 {
                     return unsupported("a normal component of a vector of the wrong extent");
                 }
-                let value = dot(components, &normal);
-                Ok(vec![if negate {
-                    ScalarExpr::unary(MUnary::Neg, value)
-                } else {
-                    value
-                }])
+                // A vector gives `G·n`; a row-major tensor gives one `row·n` per row (SV2-C1b).
+                let mut rows = Vec::with_capacity(components.len() / dimension);
+                let mut components = components.into_iter();
+                while rows.len() < rows.capacity() {
+                    let row = components.by_ref().take(dimension).collect::<Vec<_>>();
+                    let value = dot(row, &normal);
+                    rows.push(if negate {
+                        ScalarExpr::unary(MUnary::Neg, value)
+                    } else {
+                        value
+                    });
+                }
+                Ok(rows)
             }
             SemanticExprKind::Differential { operator, .. } => {
                 if *operator == DifferentialOperator::Gradient {
@@ -1422,20 +1556,39 @@ impl Lower<'_> {
         symbol: SymbolId,
         context: &StateContext,
     ) -> Result<Vec<ScalarExpr>, ConservationLawError> {
-        if symbol == self.conserved {
+        if let Some((offset, count)) = self.state_slot(symbol) {
+            let loads = |operands: &[OperandId]| {
+                operands[offset..offset + count]
+                    .iter()
+                    .map(|operand| ScalarExpr::Load(*operand))
+                    .collect::<Vec<_>>()
+            };
             return match context {
                 StateContext::Point(state) => Ok(vec![ScalarExpr::Load(*state)]),
+                StateContext::System { state, .. } => Ok(loads(state)),
                 StateContext::Facet {
                     minus, plus, side, ..
                 } => match side {
-                    Some(FacetSide::Minus) => Ok(vec![ScalarExpr::Load(*minus)]),
-                    Some(FacetSide::Plus) => Ok(vec![ScalarExpr::Load(*plus)]),
+                    Some(FacetSide::Minus) => Ok(loads(minus)),
+                    Some(FacetSide::Plus) => Ok(loads(plus)),
                     None => Err(fv_error(
                         "FV_AUTHORED_FLUX_UNTRACED",
                         "an authored flux reads the state outside trace_minus/trace_plus/jump/average",
                     )),
                 },
+                StateContext::Primitive { .. } => Err(fv_error(
+                    "FV_PRIMITIVE_MAP_INVALID",
+                    format!(
+                        "the inverse primitive map reads the conserved field `{}`",
+                        self.model.symbols[symbol.index()].name
+                    ),
+                )),
             };
+        }
+        if let StateContext::Primitive { variables } = context
+            && let Some((_, operand)) = variables.iter().find(|(variable, _)| *variable == symbol)
+        {
+            return Ok(vec![ScalarExpr::Load(*operand)]);
         }
         if let Some(value) = crate::point_expression::symbol_definition(self.model, symbol) {
             return self.expr(builder, data, value, context);
@@ -1485,7 +1638,7 @@ impl Lower<'_> {
             }
             let kind = &self.model.expressions[id.index()].kind;
             if let SemanticExprKind::Symbol { symbol } = kind {
-                if *symbol == self.conserved {
+                if self.state_slot(*symbol).is_some() {
                     return true;
                 }
                 if let Some(value) = crate::point_expression::symbol_definition(self.model, *symbol)
@@ -1532,15 +1685,15 @@ fn broadcast(op: MBinary, lhs: Vec<ScalarExpr>, rhs: Vec<ScalarExpr>) -> Option<
     }
 }
 
-fn add(a: ScalarExpr, b: ScalarExpr) -> ScalarExpr {
+pub(crate) fn add(a: ScalarExpr, b: ScalarExpr) -> ScalarExpr {
     ScalarExpr::binary(MBinary::Add, a, b)
 }
 
-fn half(value: ScalarExpr) -> ScalarExpr {
+pub(crate) fn half(value: ScalarExpr) -> ScalarExpr {
     ScalarExpr::binary(MBinary::Mul, ScalarExpr::Constant(0.5), value)
 }
 
-fn dot(components: Vec<ScalarExpr>, normal: &[OperandId]) -> ScalarExpr {
+pub(crate) fn dot(components: Vec<ScalarExpr>, normal: &[OperandId]) -> ScalarExpr {
     components
         .into_iter()
         .zip(normal)
@@ -1551,7 +1704,7 @@ fn dot(components: Vec<ScalarExpr>, normal: &[OperandId]) -> ScalarExpr {
         .expect("a spatial domain has at least one axis")
 }
 
-fn compare(op: malleus::CompareOp, lhs: ScalarExpr, rhs: ScalarExpr) -> Predicate {
+pub(crate) fn compare(op: malleus::CompareOp, lhs: ScalarExpr, rhs: ScalarExpr) -> Predicate {
     Predicate::Compare {
         op,
         lhs: Box::new(lhs),
@@ -1559,7 +1712,7 @@ fn compare(op: malleus::CompareOp, lhs: ScalarExpr, rhs: ScalarExpr) -> Predicat
     }
 }
 
-fn select(condition: Predicate, if_true: ScalarExpr, if_false: ScalarExpr) -> ScalarExpr {
+pub(crate) fn select(condition: Predicate, if_true: ScalarExpr, if_false: ScalarExpr) -> ScalarExpr {
     ScalarExpr::Select {
         condition: Box::new(condition),
         if_true: Box::new(if_true),
@@ -1571,16 +1724,16 @@ fn select(condition: Predicate, if_true: ScalarExpr, if_false: ScalarExpr) -> Sc
 // Kernel construction
 // ---------------------------------------------------------------------------------------------
 
-struct KernelBuilder {
+pub(crate) struct KernelBuilder {
     name: String,
     operands: Vec<KernelOperand>,
-    meanings: Vec<FvOperandMeaning>,
+    pub(crate) meanings: Vec<FvOperandMeaning>,
     statements: Vec<Statement>,
     locals: usize,
 }
 
 impl KernelBuilder {
-    fn new(name: &str) -> Self {
+    pub(crate) fn new(name: &str) -> Self {
         Self {
             name: name.into(),
             operands: Vec::new(),
@@ -1590,7 +1743,7 @@ impl KernelBuilder {
         }
     }
 
-    fn operand(&mut self, name: &str, meaning: FvOperandMeaning) -> OperandId {
+    pub(crate) fn operand(&mut self, name: &str, meaning: FvOperandMeaning) -> OperandId {
         if let Some(index) = self.meanings.iter().position(|item| *item == meaning) {
             return OperandId::new(index);
         }
@@ -1600,17 +1753,17 @@ impl KernelBuilder {
         OperandId::new(self.operands.len() - 1)
     }
 
-    fn normals(&mut self, dimension: u8) -> Vec<OperandId> {
+    pub(crate) fn normals(&mut self, dimension: u8) -> Vec<OperandId> {
         (0..dimension)
             .map(|axis| self.operand(&format!("n{axis}"), FvOperandMeaning::Normal { axis }))
             .collect()
     }
 
-    fn datum(&mut self, datum: usize, name: &str) -> ScalarExpr {
+    pub(crate) fn datum(&mut self, datum: usize, name: &str) -> ScalarExpr {
         ScalarExpr::Load(self.operand(name, FvOperandMeaning::Datum { datum }))
     }
 
-    fn bind(&mut self, value: ScalarExpr) -> ScalarExpr {
+    pub(crate) fn bind(&mut self, value: ScalarExpr) -> ScalarExpr {
         let local = LocalId::new(self.locals);
         self.locals += 1;
         self.statements.push(Statement::Let { local, value });
@@ -1646,20 +1799,37 @@ impl KernelBuilder {
             .collect()
     }
 
-    fn finish(
-        mut self,
+    pub(crate) fn finish(
+        self,
         role: FvKernelRole,
         value: ScalarExpr,
         facet_roles: Option<Vec<FacetOperandRole>>,
     ) -> Result<FvKernel, ConservationLawError> {
-        let output = OperandId::new(self.operands.len());
-        self.operands
-            .push(KernelOperand::scalar("output", AccessMode::Write));
-        self.meanings.push(FvOperandMeaning::Output);
-        self.statements.push(Statement::Store {
-            operand: output,
-            value,
-        });
+        self.finish_outputs(
+            role,
+            vec![("output".to_string(), FvOperandMeaning::Output, value)],
+            facet_roles,
+        )
+    }
+
+    /// SV2-C1b: one output operand per entry, in order, appended after the inputs. `facet_roles`
+    /// covers every operand, outputs included.
+    pub(crate) fn finish_outputs(
+        mut self,
+        role: FvKernelRole,
+        outputs: Vec<(String, FvOperandMeaning, ScalarExpr)>,
+        facet_roles: Option<Vec<FacetOperandRole>>,
+    ) -> Result<FvKernel, ConservationLawError> {
+        for (name, meaning, value) in outputs {
+            let output = OperandId::new(self.operands.len());
+            self.operands
+                .push(KernelOperand::scalar(&name, AccessMode::Write));
+            self.meanings.push(meaning);
+            self.statements.push(Statement::Store {
+                operand: output,
+                value,
+            });
+        }
         let kernel = StructuredKernel {
             name: self.name,
             iteration_domain: IterationDomain::default(),
@@ -2014,7 +2184,11 @@ fn sample_buffers(
                         fv_error("FV_SAMPLE_INVALID", format!("sample lacks datum `{name}`"))
                     })?
                 }
-                FvOperandMeaning::SlopeRatio | FvOperandMeaning::Output => 0.0,
+                FvOperandMeaning::SlopeRatio
+                | FvOperandMeaning::Output
+                | FvOperandMeaning::StateComponent { .. }
+                | FvOperandMeaning::PrimitiveComponent { .. }
+                | FvOperandMeaning::OutputComponent { .. } => 0.0,
             }])
         })
         .collect()

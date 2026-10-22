@@ -1464,7 +1464,11 @@ pub fn fv_kernel_sources(
                 } => source_symbol(&model.symbols[symbol.index()].name),
                 _ => continue,
             },
-            FvOperandMeaning::SlopeRatio | FvOperandMeaning::Output => continue,
+            FvOperandMeaning::SlopeRatio
+            | FvOperandMeaning::Output
+            | FvOperandMeaning::StateComponent { .. }
+            | FvOperandMeaning::PrimitiveComponent { .. }
+            | FvOperandMeaning::OutputComponent { .. } => continue,
         };
         symbols.insert((OperandId::new(index), 0), name);
     }
