@@ -9,6 +9,7 @@
 pub mod binding_slots;
 pub mod composition;
 pub mod conservation;
+pub mod conservation_diffusion;
 pub mod derivative;
 pub mod evidence;
 pub mod form_interpreter;
@@ -54,7 +55,12 @@ pub use conservation::{
     FvKernel, FvKernelRole, FvMethodIntent, FvOperandMeaning, GradientScheme, LimiterFamily,
     NonsmoothKind, NonsmoothSite, NumericalFluxIntent, PositivityIntent, ReconstructionIntent,
     ReconstructionVariables, SignedTerm, SourceTreatment, SpeedSource, check_smooth_request,
-    compile_conservation_law_system, lower_conservation_law, nonsmooth_sites, run_point,
+    compile_conservation_law_system, lower_conservation_law, lower_conservation_law_checked,
+    nonsmooth_sites, run_point,
+};
+pub use conservation_diffusion::{
+    DiffusionCoefficientKind, DiffusionIntent, DiffusionProgram, DiffusiveClaim,
+    DiffusiveClaimCheck, DiffusiveTerm, FaceAveraging, FvDiffusiveSample, check_diffusive_claims,
 };
 pub use derivative::{
     ActiveSet, Control, DERIVATIVE_REQUEST_SCHEMA, DerivativeConvention, DerivativeDependence,

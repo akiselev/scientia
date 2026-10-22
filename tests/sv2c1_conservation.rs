@@ -31,6 +31,7 @@ fn intent(numerical_flux: NumericalFluxIntent) -> FvMethodIntent {
         reconstruction: ReconstructionIntent::Constant,
         source: SourceTreatment::Pointwise,
         positivity: PositivityIntent::None,
+        diffusion: Default::default(),
     }
 }
 
@@ -105,7 +106,7 @@ fn eval(program: &ConservationLawProgram, kernel: &FvKernel, sample: &FvFluxSamp
                 FvOperandMeaning::Normal { axis } => sample.normal[usize::from(*axis)],
                 FvOperandMeaning::Datum { datum } => sample.data[&program.data[*datum].name],
                 FvOperandMeaning::SlopeRatio => sample.minus,
-                FvOperandMeaning::Output => 0.0,
+                _ => 0.0,
             }]
         })
         .collect::<Vec<_>>();

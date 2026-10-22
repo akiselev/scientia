@@ -156,6 +156,16 @@ pub enum VerificationObligationKind {
     TotalVariationDiminishing {
         field: SymbolId,
     },
+    /// FV (SV2-C1c): the diffusive face flux of `equation` dissipates, `F_d·(u⁺ − u⁻) ≤ 0`
+    /// for `k > 0`.
+    DiffusiveFluxDissipativity {
+        equation: DeclarationId,
+    },
+    /// FV (SV2-C1c, informational): the grid Péclet number `|λ_f| δ_f / k_f` of `field` per
+    /// face, reported by the realizer.
+    GridPeclet {
+        field: SymbolId,
+    },
     /// Not part of contract C6.1's kind list: a content-free carrier for obligations whose
     /// `unsupported` field is set (see `VERIFY_UNSUPPORTED_ANNOTATION`). Every other kind now
     /// requires a real `SymbolId`/`ExprId`, and a genuinely unsupported annotation (e.g.

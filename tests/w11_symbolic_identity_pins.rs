@@ -102,6 +102,7 @@ fn property_point_and_fv_identities_are_unchanged() {
             reconstruction: ReconstructionIntent::Constant,
             source: SourceTreatment::Pointwise,
             positivity: PositivityIntent::None,
+            diffusion: Default::default(),
         },
         &[],
     )

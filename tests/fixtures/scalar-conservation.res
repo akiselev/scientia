@@ -48,3 +48,62 @@ model Diffusive1D {
   parameter a;
   equation balance on Line { dt(u) + div(a * u - grad(u)) = 0; }
 }
+
+// SV2-C1c: diffusive terms. `div(k * grad(u))` is a separate additive divergence; `k` is a
+// parameter (uniform), a constitutive of u (k(u)) or a property (bound per cell by the realizer).
+model AdvectionDiffusion1D {
+  domain Line { dimension = 1; coordinates = cartesian; }
+  field u: state scalar DG(order=0) on Line { time_role = differential; };
+  parameter a;
+  parameter k;
+  equation balance on Line { dt(u) + div(a * u) - div(k * grad(u)) = 0; }
+  boundary left on boundary("left") { dirichlet u = 1; }
+  boundary right on boundary("right") { dirichlet u = 0; }
+}
+
+model NonlinearDiffusion1D {
+  domain Line { dimension = 1; coordinates = cartesian; }
+  field u: state scalar DG(order=0) on Line { time_role = differential; };
+  parameter k0;
+  constitutive k = k0 * (1 + u);
+  equation balance on Line { dt(u) - div(k * grad(u)) = 0; }
+}
+
+// D6: a kink in k(u) refuses every state derivative of the diffusive face kernel.
+model NonsmoothDiffusion1D {
+  domain Line { dimension = 1; coordinates = cartesian; }
+  field u: state scalar DG(order=0) on Line { time_role = differential; };
+  parameter k0;
+  constitutive k = k0 * (1 + abs(u));
+  equation balance on Line { dt(u) - div(k * grad(u)) = 0; }
+}
+
+// SV9 E5 stage 1: conduction through two material regions on one FV mesh. `.res` has no volume
+// sub-regions; the conductivity is a property whose provider product the realizer binds per
+// cell from the case's region-to-material map (`CellDatum` on each side of a face).
+model TwoRegionConduction2D {
+  domain Slab { dimension = 2; coordinates = cartesian; }
+  field T: state scalar DG(order=0) on Slab { time_role = differential; };
+  provider conductivity(material: selector) -> ThermalConductivity;
+  property k = conductivity(0);
+  equation balance on Slab { dt(T) - div(k * grad(T)) = 0; }
+  boundary hot on boundary("left") { dirichlet T = 1; }
+  boundary cold on boundary("right") { dirichlet T = 0; }
+  boundary insulated on boundary("top") { neumann T = 0; }
+}
+
+// Refusals: anti-diffusive sign, two diffusive divergences.
+model AntiDiffusion1D {
+  domain Line { dimension = 1; coordinates = cartesian; }
+  field u: state scalar DG(order=0) on Line { time_role = differential; };
+  parameter k;
+  equation balance on Line { dt(u) + div(k * grad(u)) = 0; }
+}
+
+model DoubleDiffusion1D {
+  domain Line { dimension = 1; coordinates = cartesian; }
+  field u: state scalar DG(order=0) on Line { time_role = differential; };
+  parameter k1;
+  parameter k2;
+  equation balance on Line { dt(u) - div(k1 * grad(u)) - div(k2 * grad(u)) = 0; }
+}

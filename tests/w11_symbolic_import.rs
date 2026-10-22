@@ -105,6 +105,7 @@ fn fv_intent(numerical_flux: NumericalFluxIntent) -> FvMethodIntent {
         reconstruction: ReconstructionIntent::Constant,
         source: SourceTreatment::Pointwise,
         positivity: PositivityIntent::None,
+        diffusion: Default::default(),
     }
 }
 

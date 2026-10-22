@@ -24,6 +24,11 @@
 //! `max`, `floor`, `ceil` whose switch depends on a differentiated operand) is refused here with
 //! `FV_NONSMOOTH_DERIVATIVE_REFUSED` (decision D6, scoped to the FV path); Scientia does not rely
 //! on Malleus for it. A `select` is piecewise, not a kink: it differentiates the taken branch.
+use crate::conservation_diffusion::{
+    DiffusionIntent, DiffusionProgram, DiffusiveTerm, DivergenceTerm, FvDiffusiveSample,
+    check_diffusive_claims, classify_divergence, lower_diffusion,
+    multidimensional_limiter_kernel, validate_limiter,
+};
 use crate::id::{Digest, span_independent_digest};
 use crate::method::{ConservationLawMethod, MethodCompileError, select_conservation_law};
 use crate::scientific::{BinaryOp, BoundaryConditionKind, ValueShape};
@@ -115,10 +120,23 @@ pub struct ConservationLawSystem {
     pub source_terms: Vec<SignedTerm>,
     pub characteristic_speed: SpeedSource,
     pub boundaries: Vec<BoundaryFluxSemantics>,
+    /// The diffusive term `div(k grad u)` (SV2-C1c); absent for a pure hyperbolic law, in
+    /// which case the artifact is byte-identical to its W12 form.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diffusion: Option<DiffusiveTerm>,
     pub artifact_digest: Digest,
 }
 
 impl ConservationLawSystem {
+    /// The hyperbolic flux `F`, or `None` for a pure diffusion law (whose only divergence,
+    /// `method.flux_divergence`, is the diffusive one; the lowering then uses a zero flux).
+    pub fn hyperbolic_flux(&self) -> Option<ExprId> {
+        match &self.diffusion {
+            Some(term) if term.divergence == self.method.flux_divergence => None,
+            _ => Some(self.method.flux),
+        }
+    }
+
     /// Every exterior region of a realized mesh must be closed by a declared boundary or be
     /// periodic; a declared boundary that is neither exterior nor periodic is also refused.
     pub fn check_boundary_closure(
@@ -164,7 +182,7 @@ pub fn compile_conservation_law_system(
     equation_name: &str,
     conserved_name: &str,
 ) -> Result<ConservationLawSystem, ConservationLawError> {
-    let (model, equation, method) =
+    let (model, equation, mut method) =
         select_conservation_law(module, model_name, equation_name, conserved_name)?;
     let conserved = &model.symbols[method.conserved.index()];
     if !matches!(
@@ -186,7 +204,10 @@ pub fn compile_conservation_law_system(
     additive_terms(model, lhs, 1, &mut terms);
     additive_terms(model, rhs, -1, &mut terms);
     let mut time_sign = None;
-    let mut flux_sign = None;
+    // (divergence expression, its argument, sign) of the hyperbolic `div(F)`.
+    let mut hyperbolic: Option<(ExprId, ExprId, i8)> = None;
+    // The diffusive `div(k grad u)` with the sign it enters the equation (SV2-C1c).
+    let mut diffusive: Option<(DiffusiveTerm, i8)> = None;
     let mut others = Vec::new();
     for (expression, sign) in terms {
         if expression == method.time_derivative {
@@ -196,12 +217,26 @@ pub fn compile_conservation_law_system(
                     "the time derivative appears more than once",
                 ));
             }
-        } else if expression == method.flux_divergence {
-            if flux_sign.replace(sign).is_some() {
-                return Err(fv_error(
-                    "FV_FLUX_NOT_CONSERVATIVE",
-                    "the flux divergence appears more than once",
-                ));
+        } else if let Some((term, factor)) =
+            classify_divergence(model, method.conserved, expression)?
+        {
+            match term {
+                DivergenceTerm::Hyperbolic { flux } => {
+                    if hyperbolic.replace((expression, flux, sign)).is_some() {
+                        return Err(fv_error(
+                            "FV_FLUX_NOT_CONSERVATIVE",
+                            "the flux divergence appears more than once",
+                        ));
+                    }
+                }
+                DivergenceTerm::Diffusive(term) => {
+                    if diffusive.replace((term, sign * factor)).is_some() {
+                        return Err(fv_error(
+                            "FV_DIFFUSIVE_FLUX_UNSUPPORTED",
+                            "more than one diffusive divergence; combine the coefficients into one `div(k * grad(u))`",
+                        ));
+                    }
+                }
             }
         } else if !is_zero_literal(model, expression) {
             others.push((expression, sign));
@@ -213,12 +248,35 @@ pub fn compile_conservation_law_system(
             "dt(u) must be an unscaled additive term of the equation",
         )
     })?;
-    let flux_sign = flux_sign.ok_or_else(|| {
-        fv_error(
-            "FV_FLUX_NOT_CONSERVATIVE",
-            "div(F) must be an unscaled additive term of the equation",
-        )
-    })?;
+    // The FC10 selection found *a* divergence; the law's flux divergence is the hyperbolic one
+    // when present, else the diffusive one (and `hyperbolic_flux()` is `None`).
+    let (flux_divergence, flux, flux_sign) = match (&hyperbolic, &diffusive) {
+        (Some((divergence, flux, sign)), _) => (*divergence, *flux, *sign),
+        (None, Some((term, sign))) => {
+            let SemanticExprKind::Differential { arg, .. } =
+                model.expressions[term.divergence.index()].kind
+            else {
+                unreachable!("a diffusive term is a divergence");
+            };
+            (term.divergence, arg, *sign)
+        }
+        (None, None) => {
+            return Err(fv_error(
+                "FV_FLUX_NOT_CONSERVATIVE",
+                "div(F) must be an unscaled additive term of the equation",
+            ));
+        }
+    };
+    if let Some((_, sign)) = &diffusive
+        && sign * time_sign > 0
+    {
+        return Err(fv_error(
+            "FV_DIFFUSION_SIGN",
+            "div(k * grad(u)) enters with the sign of dt(u) (anti-diffusion); write `dt(u) - div(k * grad(u))`",
+        ));
+    }
+    method.flux_divergence = flux_divergence;
+    method.flux = flux;
     for (expression, _) in &others {
         if contains_differential(model, *expression, |operator| {
             operator == DifferentialOperator::Divergence
@@ -301,6 +359,7 @@ pub fn compile_conservation_law_system(
         source_terms,
         characteristic_speed: SpeedSource::DerivedScalarTangent,
         boundaries,
+        diffusion: diffusive.map(|(term, _)| term),
         artifact_digest: empty_digest(),
     };
     system.artifact_digest = span_independent_digest(&system);
@@ -372,6 +431,10 @@ pub struct FvMethodIntent {
     pub reconstruction: ReconstructionIntent,
     pub source: SourceTreatment,
     pub positivity: PositivityIntent,
+    /// Diffusive face treatment (SV2-C1c); the default (harmonic averaging) is omitted from
+    /// the serialization, so W12 intents digest unchanged.
+    #[serde(default, skip_serializing_if = "DiffusionIntent::is_default")]
+    pub diffusion: DiffusionIntent,
 }
 
 impl FvMethodIntent {
@@ -487,6 +550,24 @@ pub enum FvOperandMeaning {
     },
     /// Slope ratio input of a Sweby limiter.
     SlopeRatio,
+    /// `(grad u)·n` at the face, supplied by the realizer (SV2-C1c): the two-point
+    /// `(u⁺ − u⁻)/(δ·n)` on orthogonal meshes, `δ` the minus-to-plus centre vector; at a
+    /// `dirichlet` boundary `u⁺` is the ghost state and `δ·n` the centre-to-face distance.
+    /// Odd under side exchange.
+    FaceNormalGradient,
+    /// Model data evaluated in the cell on `side` (per-cell binding, e.g. a `property` bound
+    /// per material region). The plus side of a boundary face binds the owner cell's value.
+    CellDatum {
+        datum: usize,
+        side: FacetSide,
+    },
+    /// Multidimensional limiter: the admissible increment `Δ⁺` (`u_max − u_i` when `Δ⁻ > 0`,
+    /// `u_min − u_i` when `Δ⁻ < 0`, neighbour extremes).
+    LimiterBound,
+    /// Multidimensional limiter: the unlimited reconstructed increment `Δ⁻ = ∇u_i·(x_f − x_i)`.
+    LimiterIncrement,
+    /// Multidimensional limiter: the cell size `h` (Venkatakrishnan's `ε² = (K h)³`).
+    CellSize,
     Output,
 }
 
@@ -539,6 +620,10 @@ pub enum FvKernelRole {
     PrescribedBoundaryFlux,
     Source,
     Limiter,
+    /// Point kernel `k(u)` of the diffusive term (SV2-C1c).
+    DiffusionCoefficient,
+    /// Facet-pair kernel `-k_f (grad u)·n` of the diffusive term (SV2-C1c).
+    DiffusiveFaceFlux,
 }
 
 /// One lowered kernel. `facet_roles` is set exactly for the facet-pair face flux.
@@ -660,6 +745,9 @@ pub struct ConservationLawProgram {
     pub source: Option<FvKernel>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub limiter: Option<FvKernel>,
+    /// The diffusive part (SV2-C1c); absent for a pure hyperbolic law.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diffusion: Option<DiffusionProgram>,
     pub checks: Vec<FluxClaimCheck>,
     pub obligations: Vec<VerificationObligation>,
     pub artifact_digest: Digest,
@@ -694,7 +782,7 @@ impl From<MethodCompileError> for ConservationLawError {
     }
 }
 
-fn fv_error(code: &'static str, message: impl ToString) -> ConservationLawError {
+pub(crate) fn fv_error(code: &'static str, message: impl ToString) -> ConservationLawError {
     ConservationLawError {
         code,
         message: message.to_string(),
@@ -710,11 +798,25 @@ fn empty_digest() -> Digest {
 
 /// Validate `intent` against `system` and lower every kernel. Authored fluxes need at least
 /// one sample; generic fluxes check antisymmetry at the samples given (exactly, tolerance 0).
+/// The diffusive claims are not checked here; see [`lower_conservation_law_checked`].
 pub fn lower_conservation_law(
     module: &SemanticModule,
     system: &ConservationLawSystem,
     intent: &FvMethodIntent,
     samples: &[FvFluxSample],
+) -> Result<ConservationLawProgram, ConservationLawError> {
+    lower_conservation_law_checked(module, system, intent, samples, &[])
+}
+
+/// [`lower_conservation_law`] that also checks the diffusive claims at `diffusive_samples`
+/// (SV2-C1c) and records them in the program; samples for a law without a diffusive term are
+/// refused `FV_DIFFUSION_ABSENT`.
+pub fn lower_conservation_law_checked(
+    module: &SemanticModule,
+    system: &ConservationLawSystem,
+    intent: &FvMethodIntent,
+    samples: &[FvFluxSample],
+    diffusive_samples: &[FvDiffusiveSample],
 ) -> Result<ConservationLawProgram, ConservationLawError> {
     let model = module
         .models
@@ -734,23 +836,31 @@ pub fn lower_conservation_law(
         model,
         conserved: system.method.conserved,
         dimension,
+        cell_data: false,
     };
 
-    let flux_components = {
+    // A pure diffusion law (SV2-C1c) has no hyperbolic flux: `F·n = 0` is lowered in its place
+    // so the program keeps one shape.
+    let hyperbolic = system.hyperbolic_flux();
+    if let Some(flux) = hyperbolic {
         let mut probe = KernelBuilder::new("probe");
         let state = probe.operand("u", FvOperandMeaning::State { side: None });
-        let components = lower.expr(
-            &mut probe,
-            &mut data,
-            system.method.flux,
-            &StateContext::Point(state),
-        )?;
-        components.len()
-    };
-    if flux_components != usize::from(dimension) {
+        let components = lower.expr(&mut probe, &mut data, flux, &StateContext::Point(state))?;
+        let flux_components = components.len();
+        if flux_components != usize::from(dimension) {
+            return Err(fv_error(
+                "FV_FLUX_SHAPE",
+                format!(
+                    "flux has {flux_components} component(s) on a {dimension}-dimensional domain"
+                ),
+            ));
+        }
+    } else if let NumericalFluxIntent::Authored { declaration, .. } = &intent.numerical_flux {
         return Err(fv_error(
-            "FV_FLUX_SHAPE",
-            format!("flux has {flux_components} component(s) on a {dimension}-dimensional domain"),
+            "FV_FLUX_UNSUPPORTED",
+            format!(
+                "authored numerical flux `{declaration}` needs a hyperbolic flux; the law is pure diffusion"
+            ),
         ));
     }
 
@@ -759,13 +869,17 @@ pub fn lower_conservation_law(
         let mut builder = KernelBuilder::new("physical_flux_normal");
         let state = builder.operand("u", FvOperandMeaning::State { side: None });
         let normal = builder.normals(dimension);
-        let value = lower.flux_normal(
-            &mut builder,
-            &mut data,
-            system,
-            &StateContext::Point(state),
-            &normal,
-        )?;
+        let value = if hyperbolic.is_some() {
+            lower.flux_normal(
+                &mut builder,
+                &mut data,
+                system,
+                &StateContext::Point(state),
+                &normal,
+            )?
+        } else {
+            ScalarExpr::Constant(0.0)
+        };
         builder.finish(FvKernelRole::PhysicalFluxNormal, value, None)?
     };
     let state = physical
@@ -975,6 +1089,12 @@ pub fn lower_conservation_law(
 
     let limiter = limiter.map(limiter_kernel).transpose()?;
 
+    let diffusion = system
+        .diffusion
+        .as_ref()
+        .map(|term| lower_diffusion(&lower, &mut data, term, &intent.diffusion))
+        .transpose()?;
+
     let mut checks = Vec::new();
     let tolerance = match &intent.numerical_flux {
         NumericalFluxIntent::Authored { tolerance, .. } => {
@@ -1024,7 +1144,14 @@ pub fn lower_conservation_law(
         });
     }
 
-    let obligations = obligations(model, system, intent, &checks);
+    let obligations = obligations(
+        model,
+        system,
+        intent,
+        &checks,
+        hyperbolic.is_some(),
+        diffusion.is_some(),
+    );
     let mut program = ConservationLawProgram {
         schema: CONSERVATION_LAW_PROGRAM_SCHEMA.into(),
         system_digest: system.artifact_digest.clone(),
@@ -1038,10 +1165,26 @@ pub fn lower_conservation_law(
         boundaries,
         source,
         limiter,
+        diffusion,
         checks,
         obligations,
         artifact_digest: empty_digest(),
     };
+    if !diffusive_samples.is_empty() {
+        let checks = check_diffusive_claims(&program, diffusive_samples)?;
+        program
+            .diffusion
+            .as_mut()
+            .expect("checked claims need a diffusive term")
+            .checks = checks;
+    }
+    if let Some(diffusion) = &program.diffusion {
+        program
+            .obligations
+            .extend(crate::conservation_diffusion::obligations(
+                model, system, diffusion,
+            ));
+    }
     program.artifact_digest = span_independent_digest(&program);
     Ok(program)
 }
@@ -1071,18 +1214,23 @@ fn validate_intent(intent: &FvMethodIntent) -> Result<Option<LimiterFamily>, Con
                 | LimiterFamily::MonotonizedCentral
                 | LimiterFamily::Superbee => Ok(Some(limiter.clone())),
                 LimiterFamily::BarthJespersen | LimiterFamily::Venkatakrishnan { .. } => {
-                    Err(fv_error(
-                        "FV_LIMITER_UNSUPPORTED",
-                        format!("{limiter:?} needs neighbour bounds; it is not lowered yet"),
-                    ))
+                    validate_limiter(limiter)?;
+                    Ok(Some(limiter.clone()))
                 }
             }
         }
     }
 }
 
-/// Sweby limiter `φ(r)` as a point kernel.
+/// Sweby limiter `φ(r)` as a point kernel; the multidimensional families lower to
+/// `φ(Δ⁺, Δ⁻, h)` in `crate::conservation_diffusion` (SV2-C1c).
 fn limiter_kernel(limiter: LimiterFamily) -> Result<FvKernel, ConservationLawError> {
+    if matches!(
+        limiter,
+        LimiterFamily::BarthJespersen | LimiterFamily::Venkatakrishnan { .. }
+    ) {
+        return multidimensional_limiter_kernel(&limiter);
+    }
     let mut builder = KernelBuilder::new(&format!("limiter_{limiter:?}").to_lowercase());
     let r = ScalarExpr::Load(builder.operand("r", FvOperandMeaning::SlopeRatio));
     let c = ScalarExpr::Constant;
@@ -1131,7 +1279,7 @@ fn authored_declaration(model: &SemanticModel, name: &str) -> Result<ExprId, Con
 // ---------------------------------------------------------------------------------------------
 
 #[derive(Clone)]
-enum StateContext {
+pub(crate) enum StateContext {
     Point(OperandId),
     Facet {
         minus: OperandId,
@@ -1164,7 +1312,7 @@ impl StateContext {
 }
 
 #[derive(Default)]
-struct DataTable {
+pub(crate) struct DataTable {
     data: Vec<FvDatum>,
 }
 
@@ -1182,10 +1330,15 @@ impl DataTable {
     }
 }
 
-struct Lower<'a> {
-    model: &'a SemanticModel,
-    conserved: SymbolId,
-    dimension: u8,
+#[derive(Clone, Copy)]
+pub(crate) struct Lower<'a> {
+    pub(crate) model: &'a SemanticModel,
+    pub(crate) conserved: SymbolId,
+    pub(crate) dimension: u8,
+    /// Bind a provider product read inside a sided facet context as the cell's own datum
+    /// (`FvOperandMeaning::CellDatum`) instead of uniform data; set for the diffusion
+    /// coefficient only (SV2-C1c), so W12 authored fluxes are unchanged.
+    pub(crate) cell_data: bool,
 }
 
 impl Lower<'_> {
@@ -1207,7 +1360,7 @@ impl Lower<'_> {
         })
     }
 
-    fn expr(
+    pub(crate) fn expr(
         &self,
         builder: &mut KernelBuilder,
         data: &mut DataTable,
@@ -1346,6 +1499,23 @@ impl Lower<'_> {
                         provider: *provider,
                     },
                 );
+                if self.cell_data
+                    && let StateContext::Facet {
+                        side: Some(side), ..
+                    } = context
+                {
+                    let suffix = match side {
+                        FacetSide::Minus => "minus",
+                        FacetSide::Plus => "plus",
+                    };
+                    return Ok(vec![ScalarExpr::Load(builder.operand(
+                        &format!("{name}_{suffix}"),
+                        FvOperandMeaning::CellDatum {
+                            datum,
+                            side: *side,
+                        },
+                    ))]);
+                }
                 Ok(vec![builder.datum(datum, &name)])
             }
             SemanticExprKind::FacetTrace { value, side } => {
@@ -1532,11 +1702,11 @@ fn broadcast(op: MBinary, lhs: Vec<ScalarExpr>, rhs: Vec<ScalarExpr>) -> Option<
     }
 }
 
-fn add(a: ScalarExpr, b: ScalarExpr) -> ScalarExpr {
+pub(crate) fn add(a: ScalarExpr, b: ScalarExpr) -> ScalarExpr {
     ScalarExpr::binary(MBinary::Add, a, b)
 }
 
-fn half(value: ScalarExpr) -> ScalarExpr {
+pub(crate) fn half(value: ScalarExpr) -> ScalarExpr {
     ScalarExpr::binary(MBinary::Mul, ScalarExpr::Constant(0.5), value)
 }
 
@@ -1551,7 +1721,7 @@ fn dot(components: Vec<ScalarExpr>, normal: &[OperandId]) -> ScalarExpr {
         .expect("a spatial domain has at least one axis")
 }
 
-fn compare(op: malleus::CompareOp, lhs: ScalarExpr, rhs: ScalarExpr) -> Predicate {
+pub(crate) fn compare(op: malleus::CompareOp, lhs: ScalarExpr, rhs: ScalarExpr) -> Predicate {
     Predicate::Compare {
         op,
         lhs: Box::new(lhs),
@@ -1559,7 +1729,7 @@ fn compare(op: malleus::CompareOp, lhs: ScalarExpr, rhs: ScalarExpr) -> Predicat
     }
 }
 
-fn select(condition: Predicate, if_true: ScalarExpr, if_false: ScalarExpr) -> ScalarExpr {
+pub(crate) fn select(condition: Predicate, if_true: ScalarExpr, if_false: ScalarExpr) -> ScalarExpr {
     ScalarExpr::Select {
         condition: Box::new(condition),
         if_true: Box::new(if_true),
@@ -1571,7 +1741,7 @@ fn select(condition: Predicate, if_true: ScalarExpr, if_false: ScalarExpr) -> Sc
 // Kernel construction
 // ---------------------------------------------------------------------------------------------
 
-struct KernelBuilder {
+pub(crate) struct KernelBuilder {
     name: String,
     operands: Vec<KernelOperand>,
     meanings: Vec<FvOperandMeaning>,
@@ -1580,7 +1750,7 @@ struct KernelBuilder {
 }
 
 impl KernelBuilder {
-    fn new(name: &str) -> Self {
+    pub(crate) fn new(name: &str) -> Self {
         Self {
             name: name.into(),
             operands: Vec::new(),
@@ -1590,7 +1760,7 @@ impl KernelBuilder {
         }
     }
 
-    fn operand(&mut self, name: &str, meaning: FvOperandMeaning) -> OperandId {
+    pub(crate) fn operand(&mut self, name: &str, meaning: FvOperandMeaning) -> OperandId {
         if let Some(index) = self.meanings.iter().position(|item| *item == meaning) {
             return OperandId::new(index);
         }
@@ -1610,17 +1780,34 @@ impl KernelBuilder {
         ScalarExpr::Load(self.operand(name, FvOperandMeaning::Datum { datum }))
     }
 
-    fn bind(&mut self, value: ScalarExpr) -> ScalarExpr {
+    pub(crate) fn bind(&mut self, value: ScalarExpr) -> ScalarExpr {
         let local = LocalId::new(self.locals);
         self.locals += 1;
         self.statements.push(Statement::Let { local, value });
         ScalarExpr::Local(local)
     }
 
-    fn facet_roles(&self, minus: OperandId, plus: OperandId) -> Vec<FacetOperandRole> {
+    pub(crate) fn facet_roles(&self, minus: OperandId, plus: OperandId) -> Vec<FacetOperandRole> {
         self.meanings
             .iter()
             .map(|meaning| match meaning {
+                FvOperandMeaning::CellDatum { datum, side } => FacetOperandRole::Cell {
+                    side: *side,
+                    partner: self
+                        .meanings
+                        .iter()
+                        .position(|other| {
+                            *other
+                                == FvOperandMeaning::CellDatum {
+                                    datum: *datum,
+                                    side: side.opposite(),
+                                }
+                        })
+                        .map(OperandId::new),
+                },
+                FvOperandMeaning::FaceNormalGradient => FacetOperandRole::Facet {
+                    parity: SwapParity::Odd,
+                },
                 FvOperandMeaning::State {
                     side: Some(FacetSide::Minus),
                 } => FacetOperandRole::Cell {
@@ -1646,7 +1833,7 @@ impl KernelBuilder {
             .collect()
     }
 
-    fn finish(
+    pub(crate) fn finish(
         mut self,
         role: FvKernelRole,
         value: ScalarExpr,
@@ -2014,7 +2201,13 @@ fn sample_buffers(
                         fv_error("FV_SAMPLE_INVALID", format!("sample lacks datum `{name}`"))
                     })?
                 }
-                FvOperandMeaning::SlopeRatio | FvOperandMeaning::Output => 0.0,
+                FvOperandMeaning::SlopeRatio
+                | FvOperandMeaning::FaceNormalGradient
+                | FvOperandMeaning::CellDatum { .. }
+                | FvOperandMeaning::LimiterBound
+                | FvOperandMeaning::LimiterIncrement
+                | FvOperandMeaning::CellSize
+                | FvOperandMeaning::Output => 0.0,
             }])
         })
         .collect()
@@ -2097,6 +2290,8 @@ fn obligations(
     system: &ConservationLawSystem,
     intent: &FvMethodIntent,
     checks: &[FluxClaimCheck],
+    hyperbolic: bool,
+    diffusive: bool,
 ) -> Vec<VerificationObligation> {
     let parent = &system.source_semantic_digest.hex;
     let equation = model
@@ -2186,21 +2381,29 @@ fn obligations(
     ];
     let muscl = matches!(intent.reconstruction, ReconstructionIntent::Muscl { .. });
     let forward_euler_limit = if muscl { 0.5 } else { 1.0 };
+    let mut cfl_conditions = vec![
+        if !hyperbolic {
+            "pure diffusion: the bound is the parabolic one, lambda_f = k_f / delta_f (positivity of the forward-Euler update)"
+        } else if matches!(intent.numerical_flux, NumericalFluxIntent::Central) {
+            "central flux is not forward-Euler stable; for smooth problems and testing only"
+        } else if muscl {
+            "MUSCL limit 1/2 on 1-D Cartesian cells, times the integrator SSP coefficient"
+        } else {
+            "first-order monotone flux, times the integrator SSP coefficient"
+        },
+    ];
+    if hyperbolic && diffusive {
+        cfl_conditions.push(
+            "with the diffusive part, lambda_f is replaced by lambda_f + k_f / delta_f (positivity of the combined forward-Euler update)",
+        );
+    }
     out.push(make(
         "explicit step obeys the CFL bound of the lowered scheme".into(),
         VerificationObligationKind::CflBound {
             field,
             forward_euler_limit,
         },
-        vec![
-            if matches!(intent.numerical_flux, NumericalFluxIntent::Central) {
-                "central flux is not forward-Euler stable; for smooth problems and testing only"
-            } else if muscl {
-                "MUSCL limit 1/2 on 1-D Cartesian cells, times the integrator SSP coefficient"
-            } else {
-                "first-order monotone flux, times the integrator SSP coefficient"
-            },
-        ],
+        cfl_conditions,
         "dt <= C min_i |V_i| / sum_{f in i} |f| lambda_f",
         ToleranceClass::Exact,
         VerificationEvidenceClass::Numerical,
@@ -2209,9 +2412,18 @@ fn obligations(
         intent.numerical_flux,
         NumericalFluxIntent::LocalLaxFriedrichs | NumericalFluxIntent::Hll
     );
+    // Sweby limiters stay inside the TVD region; Barth-Jespersen and Venkatakrishnan bound
+    // reconstructions by neighbour extremes (a local maximum principle, not TVD) and make no
+    // TVD claim.
     let tvd_limited = match &intent.reconstruction {
         ReconstructionIntent::Constant => true,
-        ReconstructionIntent::Muscl { limiter, .. } => *limiter != LimiterFamily::None,
+        ReconstructionIntent::Muscl { limiter, .. } => matches!(
+            limiter,
+            LimiterFamily::Minmod
+                | LimiterFamily::VanLeer
+                | LimiterFamily::MonotonizedCentral
+                | LimiterFamily::Superbee
+        ),
     };
     if monotone && tvd_limited {
         out.push(make(
